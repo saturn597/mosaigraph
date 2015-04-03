@@ -18,6 +18,7 @@ Usage:
 -c: specify a directory to catalog
 -g: specify a "group" of images
 """
+
 def getColorAvg(img):
     # returns the average color of all pixels in an rgb image
     width, height = img.size
@@ -75,7 +76,7 @@ def getImages(d):
     return [f for f in os.listdir(d) if re.search(isimg, f)]
 
 def divideRect(width, height, pieceWidth, pieceHeight):
-    # take rectangle of width and height, and divide it into squares of pieceWidth x pieceHeight
+    # take rectangle of width and height, and divide it into rectangles of pieceWidth x pieceHeight
     numX = width / pieceWidth
     numY = height / pieceHeight
     divisionsX = [ x * pieceWidth for x in range(0, numX) ]
@@ -92,19 +93,75 @@ def divideImage(img, pieceWidth, pieceHeight):
         pieceData.append({ 'x': piece[0], 'y': piece[1], 'image': cropped })
     return pieceData
 
-def makeMosaigraph(img, horizDivs, vertDivs, group):
-    newImg = Image.new(img.mode, img.size)
+def divideImgXPieces(img, numPieces):
     width, height = img.size
+    edgeSize = int(math.sqrt(numPieces / (width * height)))
+    numX = width / edgeSize
+    numY = height / edgeSize
+
+    for x in range(0, numX):
+        for y in range(0, numY):
+            xcoord = x * edgeSize
+            ycoord = y * edgeSize
+            image = img.crop(xcoord, ycoord)
+            yield { 'x': xcoord, 'y': ycoord, 'image': image }
+
+def makeMosaigraph2(img, numPieces, group, newPieceSize = 100):
+    width, height = img.size
+    edgeSize = int(1 / math.sqrt(float(numPieces) / (width * height)))
+    scale = newPieceSize / edgeSize 
+
+    pieces = divideImage(img, edgeSize, edgeSize)
+    length = len(pieces)
+
+    newImg = Image.new(img.mode, (width * scale, height * scale))
+    currentNum = 0
+
+    newPieceSize = edgeSize * scale
+
+    for piece in pieces:
+        rgb = getColorAvg2(getSomePixels(piece['image'], 1))
+        #addOn = Image.new('RGB', (pieceWidth, pieceHeight), (rgb)) #this line would just paste the exact color in
+        path = findMatch(rgb, group)
+        print path
+        addOn = makeProportional(Image.open(path)).resize((newPieceSize, newPieceSize))
+        newImg.paste(addOn, (piece['x'] * scale, piece['y'] * scale))
+        currentNum += 1
+        print "Currently on piece " + str(currentNum) + " out of " + str(length)
+
+    return newImg
+     
+
+def makeMosaigraph(img, horizDivs, vertDivs, group, minPieceSize = 100):
+    width, height = img.size
+
     pieceWidth = width / horizDivs
     pieceHeight = height / vertDivs
+
+    if pieceWidth > pieceHeight:
+        pieceWidth = pieceHeight
+    else:
+        pieceHeight = pieceWidth
+
+    scale = 1
+
+    if pieceWidth < minPieceSize:
+        scale = minPieceSize / pieceWidth
+    if pieceHeight * scale < minPieceSize:
+        scale = minPieceSize / pieceHeight
+
+    newImg = Image.new(img.mode, (width * scale, height * scale))
+
     pieces = divideImage(img, pieceWidth, pieceHeight)
     length = len(pieces)
     currentNum = 0
     for piece in pieces:
         rgb = getColorAvg2(getSomePixels(piece['image'], 1))
         #addOn = Image.new('RGB', (pieceWidth, pieceHeight), (rgb)) #this line would just paste the exact color in
-        addOn = makeProportional(Image.open(findMatch(rgb, group))).resize((pieceWidth, pieceHeight))
-        newImg.paste(addOn, (piece['x'], piece['y']))
+        path = findMatch(rgb, group)
+        print path
+        addOn = makeProportional(Image.open(path)).resize((pieceWidth * scale, pieceHeight * scale))
+        newImg.paste(addOn, (piece['x'] * scale, piece['y'] * scale))
         currentNum += 1
         print "Currently on piece " + str(currentNum) + " out of " + str(length)
     return newImg
@@ -141,8 +198,8 @@ def makeProportional(img, ratio = 1):
 def catalogImages(imagePath, group):
     for filename in getImages(imagePath):
         fullPath = os.path.join(imagePath, filename)
-        image = makeProportional(Image.open(fullPath))
         if not dbtable.find_one(path = fullPath):  # only do all the calculations if we haven't already checked this file
+            image = makeProportional(Image.open(fullPath))
             avg = getColorAvg2(getSomePixels(image, 100))
             print fullPath + " : " + str(avg)
             dbtable.insert(dict(path = fullPath, r = avg[0], g = avg[1], b = avg[2], group = group))
@@ -152,9 +209,10 @@ def main(argv):
     catalog_directory = None
     group = None
     image_path = None
+    n = 100
 
     try:
-        opts, args = getopt.getopt(argv, "c:g:i:", ["catalog=", "group=", "image="])
+        opts, args = getopt.getopt(argv, "c:g:i:n:", ["catalog=", "group=", "image=", "number="])
     except getopt.GetoptError:
         print usage_string
         sys.exit(2)
@@ -163,13 +221,15 @@ def main(argv):
             catalog_directory = arg
         elif opt in ("-g", "--group"):
             group = arg
-        elif opt in ("-i", "--imagePath"):
+        elif opt in ("-i", "--image"):
             image_path = arg
+        elif opt in ("-n", "--number"):
+            n = arg
             
     if catalog_directory:
         catalogImages(catalog_directory, group)
     else:
-        i = makeMosaigraph(Image.open(image_path), 20, 30, group)
+        i = makeMosaigraph2(Image.open(image_path), n, group)
         i.show()
 
 if __name__ == "__main__":
