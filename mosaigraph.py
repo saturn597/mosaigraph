@@ -1,99 +1,141 @@
-
 from __future__ import division
 
 from PIL import Image
+from scipy import spatial
 
+import argparse
 import dataset
 import getopt
 import math
 import random
 import os
 import re
+import struct
 import sys
 
-imagePath = './images'
-dbname = 'sqlite:///data.db'
-db = dataset.connect(dbname)
-dbtable = db['image']
 
-# TODO: Fix usage string
-usage_string = """
-Usage: 
--c: specify a directory to catalog
--g: specify a "group" of images
-"""
+def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False):
+    # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc.
+    
+    # TODO: what if we get group AND directory?
+    if group:
+        candidates = list(dbtable.find(group = group))
+    elif directory:
+        process_images(get_images(directory))  # could conceivably do this as we're looking for matches (so we don't add an extra pass through all the images)
+        candidates = list(dbtable.find(directory = directory))
+    else:
+        candidates = list(dbtable.all())
 
-def getColorAvg(pixels):
-    r, g, b = 0.0, 0.0, 0.0
-    numPixels = 0
+    # uniqueness check here?
+    kdtree = spatial.KDTree([(item['r'], item['g'], item['b']) for item in candidates])
+
+    width, height = img.size
+        
+    edgeSize = get_best_edge_size(width, height, numPieces)
+    
+    numX = width // edgeSize
+    numY = height // edgeSize
+    numPieces = numX * numY
+
+    newImg = Image.new(img.mode, (width // edgeSize * newEdgeSize, height // edgeSize * newEdgeSize))
+
+    currentNum = 0
+
+    the_pieces = [(x, y) for x in range(0, numX) for y in range(0, numY)]
+
+    # if we have a limited pool of images to pick from, pieces of the mosaic added later are likely to look
+    # worse than ones added earlier, as we run out of good matches. Randomize the order in which we add pieces 
+    # to the mosaic so that one region doesn't look better/worse than another. Not confident this is necessarily
+    # better - seems to lead to an image that's equally bad all over. 
+    # TODO: Maybe make this just an option.
+    random.shuffle(the_pieces)
+
+    open_images = {}
+    
+    for x, y in the_pieces:
+        oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
+        rgb = get_color_avg(get_n_pixels(oldPiece, 300))
+
+        # TODO: don't want so many "unique" checks
+        if unique:
+            # kdtree is an efficient data structure for nearest neighbor search. However, it's
+            # difficult to exclude items from the search that we've already used. (At least
+            # given scipy's implementation). So for now using a linear search when uniqueness is
+            # needed.
+            closest_index = find_match(rgb, candidates)
+        else:
+            closest_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
+         
+        path = candidates[closest_index]['path']
+
+        if not unique and path in open_images:  # don't redo everything for images we've already loaded
+            # TODO: unique check
+            addition = open_images[path]
+        else:
+            new_piece = Image.open(path)
+            proportional = make_proportional(new_piece)
+            addition = proportional.resize((newEdgeSize, newEdgeSize))
+            if unique:
+              # TODO: unique check
+              candidates.pop(closest_index)
+            else:
+              open_images[path] = addition
+
+        newImg.paste(addition, (x * newEdgeSize, y * newEdgeSize))
+        currentNum += 1
+        print("Completed piece " + str(currentNum) + " out of " + str(numPieces))
+        print(path)
+    
+    return newImg
+
+def find_match(rgb, candidates):
+    # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
+    # returns the index of the match within candidates 
+
+    closest_image = None
+    least_distance = math.sqrt(255**2 + 255 ** 2 + 255 ** 2)
+    for n, image in enumerate(candidates):
+        distance = math.sqrt((image['r'] - rgb['r'])**2 + (image['g'] - rgb['g'])**2 + (image['b'] - rgb['b'])**2)
+        if distance < least_distance:
+            closest_index = n
+            least_distance = distance
+    
+    return closest_index
+
+def get_color_avg(pixels):
+    # get the average color in a iterable of pixels
+
+    r, g, b = 0, 0, 0
+    num_pixels = 0
 
     for pix in pixels:
         r += pix[0]
         g += pix[1]
         b += pix[2]
-        numPixels += 1
+        num_pixels += 1
     
-    r = r / numPixels
-    g = g / numPixels
-    b = b / numPixels
+    r = r / num_pixels
+    g = g / num_pixels
+    b = b / num_pixels
 
-    return (int(r), int(g), int(b))
+    return {'r': int(r), 'g': int(g), 'b': int(b)}
 
-def getAllPixels(img):
-    width, height = img.size
-    for x in range(0, width):
-        for y in range(0, height):
-            yield img.getpixel((x, y))
-
-def getSomePixels(img, n):
+def get_n_pixels(img, n):
     # return iterator through n randomly selected pixels in an image
+
     width, height = img.size
     for i in range(0, n):
         x = random.randint(0, width - 1)  # is subtracting 1 correct?
         y = random.randint(0, height - 1) 
         yield img.getpixel((x, y))
-         
-def getImages(d):
-    # return a list of image filenames in directory d
-    isimg = re.compile('\.(png|jpg)$')
-    return [f for f in os.listdir(d) if re.search(isimg, f)]
 
-def divideRect(width, height, pieceWidth, pieceHeight):
-    # take rectangle of width and height, and divide it into rectangles of pieceWidth x pieceHeight
-    numX = width // pieceWidth
-    numY = height // pieceHeight
-    divisionsX = [ x * pieceWidth for x in range(0, numX) ]
-    divisionsY = [ y * pieceHeight for y in range(0, numY) ]
-    return [(x, y) for x in divisionsX for y in divisionsY] 
-
-def divideImage(img, pieceWidth, pieceHeight):
-    width, height = img.size
-    pieces = divideRect(width, height, pieceWidth, pieceHeight)
-    pieceData = []
-    for piece in pieces:
-        cropped = img.crop((piece[0], piece[1], piece[0] + pieceWidth, piece[1] + pieceHeight))  
-        # Do I need to subtract one from pieceWidth and pieceHeight? Might be needed to ensure that the pieces don't overlap
-        pieceData.append({ 'x': piece[0], 'y': piece[1], 'image': cropped })
-    return pieceData
-
-def divideImgXPieces(img, numPieces):
-    width, height = img.size
-    edgeSize = int(math.sqrt(numPieces / (width * height)))
-    numX = width // edgeSize
-    numY = height // edgeSize
-
-    for x in range(0, numX):
-        for y in range(0, numY):
-            xcoord = x * edgeSize
-            ycoord = y * edgeSize
-            image = img.crop(xcoord, ycoord)
-            yield { 'x': xcoord, 'y': ycoord, 'image': image }
-
-def findBestEdgeSize(width, height, numPieces):
-    
+def get_best_edge_size(width, height, numPieces):
+    # If we have a rectangle of width and height, and we want to divide it into numPieces squares of equal size
+    # how long should each square's sides be to get as close as possible to numPieces?
+ 
     # get an initial estimate
-    # maybe would be simpler to start with an estimate of 1, then iterate up
-    currentEstimate = int(math.sqrt(width * height / float(numPieces)))
+    # maybe would be simpler to just start with an estimate of 1, then iterate up
+    currentEstimate = int(math.sqrt(width * height / numPieces))
 
     # get the difference between the number of pieces this gives and the number we want
     signedDiff = (width // currentEstimate) * (height // currentEstimate) - numPieces
@@ -116,80 +158,11 @@ def findBestEdgeSize(width, height, numPieces):
             return currentEstimate - step
         lastDiff = currentDiff
 
-def makeMosaigraph(img, numPieces, group = None, directory = None, newEdgeSize = 300, unique = False):
-    
-    # what if we get group AND directory?
-    if group:
-        candidates = list(dbtable.find(group = group))
-    elif directory:
-        processImages(directory)  # could conceivably do this as we're looking for matches (so we don't add an extra pass through all the images)
-        candidates = list(dbtable.find(directory = directory))
-    else:
-        candidates = list(dbtable.all())
-        
-    width, height = img.size
-        
-    edgeSize = findBestEdgeSize(width, height, numPieces)
-    
-    numX = width // edgeSize
-    numY = height // edgeSize
-    numPieces = numX * numY
 
-    newImg = Image.new(img.mode, (width // edgeSize * newEdgeSize, height // edgeSize * newEdgeSize))
-
-    currentNum = 0
-    for x in range(0, numX):
-        for y in range(0, numY):
-            oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
-            rgb = getColorAvg(getSomePixels(oldPiece, 300))
-            closest_index = findMatch(rgb, candidates)
-            path = candidates[closest_index]['path']
-            if unique:
-                candidates.pop(closest_index)
-            addOn = makeProportional(Image.open(path)).resize((newEdgeSize, newEdgeSize))
-            newImg.paste(addOn, (x * newEdgeSize, y * newEdgeSize))
-            currentNum += 1
-            print("Completed piece " + str(currentNum) + " out of " + str(numPieces))
-            print(path)
-    
-    """ 
-    pieces = divideImage(img, edgeSize, edgeSize)
-    length = len(pieces)
-    newImg = Image.new(img.mode, (width / edgeSize * newEdgeSize, height / edgeSize * newEdgeSize))
-    currentNum = 0
-    
-    for piece in pieces:
-        rgb = getColorAvg(getSomePixels(piece['image'], 300))
-        #addOn = Image.new('RGB', (pieceWidth, pieceHeight), (rgb)) #this line would just paste the exact color in
-        closest_index = findMatch(rgb, candidates)
-        path = candidates[closest_index]['path']
-        if unique:
-            candidates.pop(closest_index)
-        addOn = makeProportional(Image.open(path)).resize((newEdgeSize, newEdgeSize))
-        newImg.paste(addOn, (piece['x'] / edgeSize * newEdgeSize, piece['y'] / edgeSize * newEdgeSize))
-        currentNum += 1
-        print "Currently on piece " + str(currentNum) + " out of " + str(length)
-        print path
-    """
-    return newImg
-
-def findMatch(rgb, candidates):
-
-    closest_image = None
-    least_distance = math.sqrt(255**2 + 255 ** 2 + 255 ** 2)
-    for n, image in enumerate(candidates):
-        distance = math.sqrt((image['r'] - rgb[0])**2 + (image['g'] - rgb[1])**2 + (image['b'] - rgb[2])**2)
-        if distance < least_distance:
-            closest_index = n
-            least_distance = distance
-    
-    return closest_index
-
-#toShow.paste(cropped, (0, 0))  # for some reason passing None as the box results in an error ("images do not match") - docs say these are the same
-
-def makeProportional(img, ratio = 1):
+def make_proportional(img, ratio = 1):
     # returns a piece of the center of an image with a given width/height ratio
     # ratio defaults to 1
+
     width, height = img.size
     if width > height * ratio:
         # if the width is too big, cut the sides off the image by enough to make it right
@@ -202,70 +175,92 @@ def makeProportional(img, ratio = 1):
     else:
         return img
 
+def get_images(d):
+    # return a list of image filenames in directory d
 
-def processImages(directory, group = None):
-    for filename in getImages(directory):
-        processImage(os.path.join(directory, filename), group)
+    isimg = re.compile('\.(png|jpg)$')
+    return [os.path.join(d, f) for f in os.listdir(d) if re.search(isimg, f)]
 
-def processImage(path, group):
-    # maybe combine with processImages
-    if not dbtable.find_one(path = path):  # only do all the calculations if we haven't already checked this file
-        image = makeProportional(Image.open(path))
-        avg = getColorAvg(getSomePixels(image, 300))
-        print (path + " : " + str(avg))
-        dbtable.insert(dict(path = fullPath, r = avg[0], g = avg[1], b = avg[2], group = group, directory = os.path.dirname(path)))
+def process_images(image_files, dbtable, group = None):
+    # process a given iterable of image_files, finding and storing the "average" color of the images in 
+    # the given database table, and cataloging as belonging to the given "group" (a string describing the
+    # category into which the image falls)
+
+    for filename in image_files:
+        path = unicode(filename, sys.getfilesystemencoding())
+
+        print path
+        if not dbtable.find_one(path = path):  # only do all the calculations if we haven't already checked this file
+            try: 
+                image = make_proportional(Image.open(path).convert(mode = "RGB"))
+            except (IOError, struct.error):
+                # IOError is usually because the file isn't an image file.
+                # TODO: look into what's causing struct.error
+                print(filename + " couldn't be processed")
+                continue
+            avg = get_color_avg(get_n_pixels(image, 300))
+            print (path + " : " + str(avg))
+
+            # build a new row to add to the db
+            new_row = dict(path = path, r = avg['r'], g = avg['g'], b = avg['b'], directory = os.path.dirname(path))
+            if group != None:  # using None as a value in an insert raises warnings, avoiding it
+                new_row['group'] = str(group)
+
+            dbtable.insert(new_row)
+
 
 def main(argv):
-    directoryToProcess = None
-    group = None
-    imagePath = None
-    n = 100
-    outfile = None
-    sourceDirectory = None
-    unique = False
+    # Process command line args. Depending on the result, either make a new photomosaic and display or save it (mosaic mode), or simply
+    # preprocess images and save them to a database file (preprocessing mode)
+    print 'processing args'
 
-    try:
-        opts, args = getopt.getopt(argv, "g:n:o:p:s:u", ["group=", "number=", "output=", "preprocess=", "sourcedirectory=", "unique"])
-    except getopt.GetoptError:
-        print(usage_string)
-        sys.exit(2)
-    for opt, arg in opts:
-        if opt in ("-g", "--group"):
-            group = arg
-        elif opt in ("-n", "--number"):
-            n = int(arg)
-        elif opt in ("-o", "--output"):
-            outfile = arg
-        elif opt in ("-p", "--preprocess"):
-            directoryToProcess = os.path.abspath(arg)
-        elif opt in ("-s", "--sourcedirectory"):
-            sourceDirectory = os.path.abspath(arg)
-        elif opt in ("-u", "--unique"):
-            unique = True
+    arg_parser = argparse.ArgumentParser()
+ 
+    # options/argument for mosaic mode only
+    arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
+    arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE')
+    arg_parser.add_argument('-s', '--sourcedirectory', dest = 'source_directory', metavar = 'DIRECTORY', help = 'use images from specified directory as "pieces" of the mosaic')
+    arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
+    arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
+    arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'pieces of the mosaic will have edges this many pixels long')
+
+    arg_parser.add_argument('filename', nargs = '?', help = 'the filename of the image we\'re making a mosaic of; the mosaic will look like this image')
+
+    # option to turn on preprocessing mode
+    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to our pool of potential images; options and arguments other than -g and -d will be ignored')
+
+    # options usable in both mosaic mode and preprocessing mode
+    arg_parser.add_argument('-d', '--dbfile', default = 'data.db', help = 'in mosaic mode, use images pointed to by this database file; in preprocessing mode, save the data to this file')
+    arg_parser.add_argument('-g', '--group', help = 'in mosaic mode, use only images from a previously defined group as "pieces" of the mosaic; in preprocessing mode, adds images we preprocess to the specified group')
+
+    args = arg_parser.parse_args()
     
+    print 'connecting to db'
+    dbname = 'sqlite:///' + args.dbfile
+    db = dataset.connect(dbname)
+    dbtable = db['image']
 
-    if directoryToProcess:
-        processImages(directoryToProcess, group)
-    elif len(args) == 1:
-        imagePath = args[0]
-        i = makeMosaigraph(Image.open(imagePath), n, group = group, directory = sourceDirectory, unique = unique)
-        if outfile:
-            i.save(outfile)
+    if args.preprocess:
+        process_images(args.preprocess, dbtable, args.group)
+    elif args.filename:
+
+        if args.outfile and os.path.exists(args.outfile):
+            print("Overwrite existing file {}? y/n".format(args.outfile))
+            if not (raw_input() in ["yes", "y"]):
+                sys.exit(0) 
+
+        print 'making mosaigraph'
+        i = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize)
+        if args.outfile:
+            i.save(args.outfile)
         else:
-            i.show()
+            if not args.nooutput:
+              print "showing output"
+              i.show()
     else:
-        print(usage_string)
-        sys.exit(2)
+        print("Nothing to do!\n")
+        arg_parser.print_help()
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main(sys.argv)
 
-
-
-"""
-img = Image.open('./images/test3.jpg')
-makeMosaigraph(img, 10, 10).show()
-makeMosaigraph(img, 50, 50).show()
-makeMosaigraph(img, 100, 100).show()
-makeMosaigraph(img, 300, 300).show()
-"""
