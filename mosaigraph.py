@@ -14,7 +14,7 @@ import struct
 import sys
 
 
-def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False):
+def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False, randomize_order = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc.
     
     # TODO: what if we get group AND directory?
@@ -44,42 +44,41 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
     the_pieces = [(x, y) for x in range(0, numX) for y in range(0, numY)]
 
     # if we have a limited pool of images to pick from, pieces of the mosaic added later are likely to look
-    # worse than ones added earlier, as we run out of good matches. Randomize the order in which we add pieces 
-    # to the mosaic so that one region doesn't look better/worse than another. Not confident this is necessarily
-    # better - seems to lead to an image that's equally bad all over. 
-    # TODO: Maybe make this just an option.
-    random.shuffle(the_pieces)
+    # worse than ones added earlier, as we run out of good matches. Offering option to randomize the order in 
+    # which we add pieces to the mosaic so that one region doesn't look better/worse than another. Not 
+    # confident this is necessarily better - seems to lead to an image that's equally bad all over. 
+    if randomize_order:
+        random.shuffle(the_pieces)
 
-    open_images = {}
+    loaded_images = {}  # loading images is our most expensive operation; cache them so we don't need to load 2x
     
+    def prep_image(path):
+        new_piece = Image.open(path)
+        proportional = make_proportional(new_piece)
+        return proportional.resize((newEdgeSize, newEdgeSize))
+
+    paths = []
     for x, y in the_pieces:
         oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
         rgb = get_color_avg(get_n_pixels(oldPiece, 300))
 
-        # TODO: don't want so many "unique" checks
         if unique:
             # kdtree is an efficient data structure for nearest neighbor search. However, it's
             # difficult to exclude items from the search that we've already used. (At least
             # given scipy's implementation). So for now using a linear search when uniqueness is
             # needed.
-            closest_index = find_match(rgb, candidates)
+            match_index = find_match_linear(rgb, candidates)
+            path = candidates[match_index]['path']
+            addition = prep_image(path)
+            candidates.pop(match_index)
         else:
-            closest_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
-         
-        path = candidates[closest_index]['path']
-
-        if not unique and path in open_images:  # don't redo everything for images we've already loaded
-            # TODO: unique check
-            addition = open_images[path]
-        else:
-            new_piece = Image.open(path)
-            proportional = make_proportional(new_piece)
-            addition = proportional.resize((newEdgeSize, newEdgeSize))
-            if unique:
-              # TODO: unique check
-              candidates.pop(closest_index)
+            match_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
+            path = candidates[match_index]['path']
+            if path in loaded_images:
+                addition = loaded_images[path]
             else:
-              open_images[path] = addition
+                addition = prep_image(path)
+                loaded_images[path] = addition  # if we must open the image, add it to our cache
 
         newImg.paste(addition, (x * newEdgeSize, y * newEdgeSize))
         currentNum += 1
@@ -88,7 +87,7 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
     
     return newImg
 
-def find_match(rgb, candidates):
+def find_match_linear(rgb, candidates):
     # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
     # returns the index of the match within candidates 
 
@@ -103,7 +102,7 @@ def find_match(rgb, candidates):
     return closest_index
 
 def get_color_avg(pixels):
-    # get the average color in a iterable of pixels
+    # get the average color in a iterable of rgb pixels
 
     r, g, b = 0, 0, 0
     num_pixels = 0
@@ -219,6 +218,7 @@ def main(argv):
     # options/argument for mosaic mode only
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
     arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE')
+    arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
     arg_parser.add_argument('-s', '--sourcedirectory', dest = 'source_directory', metavar = 'DIRECTORY', help = 'use images from specified directory as "pieces" of the mosaic')
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
     arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
@@ -250,7 +250,7 @@ def main(argv):
                 sys.exit(0) 
 
         print 'making mosaigraph'
-        i = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize)
+        i = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize)
         if args.outfile:
             i.save(args.outfile)
         else:
