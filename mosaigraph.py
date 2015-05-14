@@ -16,7 +16,9 @@ import sys
 
 def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False, randomize_order = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc.
-    
+
+    # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
+
     # TODO: what if we get group AND directory?
     if group:
         candidates = list(dbtable.find(group = group))
@@ -26,8 +28,11 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
     else:
         candidates = list(dbtable.all())
 
-    # uniqueness check here?
-    kdtree = spatial.KDTree([(item['r'], item['g'], item['b']) for item in candidates])
+    if not unique:
+      # k-d trees are an efficient data structure for nearest neighbor search. However, it's difficult to exclude 
+      # items from the search that we've already used. (At least given scipy's implementation). So 
+      # for now only using them when we don't mind reusing images.
+      kdtree = spatial.KDTree([(item['r'], item['g'], item['b']) for item in candidates])
 
     width, height = img.size
         
@@ -57,16 +62,13 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
         proportional = make_proportional(new_piece)
         return proportional.resize((newEdgeSize, newEdgeSize))
 
-    paths = []
     for x, y in the_pieces:
         oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
         rgb = get_color_avg(get_n_pixels(oldPiece, 300))
 
         if unique:
-            # kdtree is an efficient data structure for nearest neighbor search. However, it's
-            # difficult to exclude items from the search that we've already used. (At least
-            # given scipy's implementation). So for now using a linear search when uniqueness is
-            # needed.
+            # if unique, we don't worry about caching, but have to avoid reusing images, and not
+            # using k-d trees for now (explained above).
             match_index = find_match_linear(rgb, candidates)
             path = candidates[match_index]['path']
             addition = prep_image(path)
@@ -82,9 +84,9 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
 
         newImg.paste(addition, (x * newEdgeSize, y * newEdgeSize))
         currentNum += 1
-        print("Completed piece " + str(currentNum) + " out of " + str(numPieces))
-        print(path)
-    
+        sys.stdout.write("\rCompleted piece " + str(currentNum) + " out of " + str(numPieces))
+        sys.stdout.flush()
+    print("")
     return newImg
 
 def find_match_linear(rgb, candidates):
@@ -184,6 +186,7 @@ def process_images(image_files, dbtable, group = None):
     # process a given iterable of image_files, finding and storing the "average" color of the images in 
     # the given database table, and cataloging as belonging to the given "group" (a string describing the
     # category into which the image falls)
+    num = 0
 
     for filename in image_files:
         path = unicode(filename, sys.getfilesystemencoding())
@@ -198,7 +201,8 @@ def process_images(image_files, dbtable, group = None):
                 print(filename + " couldn't be processed")
                 continue
             avg = get_color_avg(get_n_pixels(image, 300))
-            print (path + " : " + str(avg))
+            num += 1
+            print ("processed image number " + str(num) + " : " + path + " : " + str(avg))
 
             # build a new row to add to the db
             new_row = dict(path = path, r = avg['r'], g = avg['g'], b = avg['b'], directory = os.path.dirname(path))
