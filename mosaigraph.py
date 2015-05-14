@@ -6,6 +6,7 @@ from scipy import spatial
 import argparse
 import dataset
 import getopt
+import json
 import math
 import random
 import os
@@ -15,7 +16,7 @@ import sys
 
 
 def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False, randomize_order = False):
-    # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc.
+    # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
 
@@ -62,6 +63,7 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
         proportional = make_proportional(new_piece)
         return proportional.resize((newEdgeSize, newEdgeSize))
 
+    paths = []
     for x, y in the_pieces:
         oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
         rgb = get_color_avg(get_n_pixels(oldPiece, 300))
@@ -81,13 +83,14 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
             else:
                 addition = prep_image(path)
                 loaded_images[path] = addition  # if we must open the image, add it to our cache
-
+        
+        paths.append( {'x': x, 'y': y, 'path': path } )
         newImg.paste(addition, (x * newEdgeSize, y * newEdgeSize))
         currentNum += 1
         sys.stdout.write("\rCompleted piece " + str(currentNum) + " out of " + str(numPieces))
         sys.stdout.flush()
     print("")
-    return newImg
+    return newImg, paths
 
 def find_match_linear(rgb, candidates):
     # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
@@ -220,6 +223,7 @@ def main(argv):
     arg_parser = argparse.ArgumentParser()
  
     # options/argument for mosaic mode only
+    arg_parser.add_argument('-j', '--json', metavar = 'FILE', help = 'produce a json file FILE that shows which images were used where in the mosaic')
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
     arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE')
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
@@ -231,7 +235,7 @@ def main(argv):
     arg_parser.add_argument('filename', nargs = '?', help = 'the filename of the image we\'re making a mosaic of; the mosaic will look like this image')
 
     # option to turn on preprocessing mode
-    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to our pool of potential images; options and arguments other than -g and -d will be ignored')
+    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -g and -d will be ignored')
 
     # options usable in both mosaic mode and preprocessing mode
     arg_parser.add_argument('-d', '--dbfile', default = 'data.db', help = 'in mosaic mode, use images pointed to by this database file; in preprocessing mode, save the data to this file')
@@ -254,13 +258,16 @@ def main(argv):
                 sys.exit(0) 
 
         print 'making mosaigraph'
-        i = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize)
+        i, dict = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize)
         if args.outfile:
             i.save(args.outfile)
         else:
             if not args.nooutput:
               print "showing output"
               i.show()
+        if args.json:
+            with open(args.json, 'w') as f:
+                json.dump(dict, f)
     else:
         print("Nothing to do!\n")
         arg_parser.print_help()
