@@ -14,8 +14,13 @@ import re
 import struct
 import sys
 
+# TODO: add alternative means of comparing images (like something from scikit-img, or just pixel-wise comparison of images)
+# TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
+# TODO: benchmark preprocessing, see if it can be sped up
 
-def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False, randomize_order = False):
+image_cache = {}
+
+def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False, randomize_order = False, pixelwise = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
@@ -66,17 +71,25 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
     paths = []
     for x, y in the_pieces:
         oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
+
+        # currently, integration of the "pixelwise" option is ugly
+        if pixelwise:
+            match_index = find_match_deep(oldPiece, candidates, compare_pixelwise)
+
         rgb = get_color_avg(get_n_pixels(oldPiece, 300))
 
         if unique:
             # if unique, we don't worry about caching, but have to avoid reusing images, and not
             # using k-d trees for now (explained above).
-            match_index = find_match_linear(rgb, candidates)
+            if not pixelwise: 
+                match_index = find_match_linear(rgb, candidates)
             path = candidates[match_index]['path']
             addition = prep_image(path)
             candidates.pop(match_index)
+
         else:
-            match_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
+            if not pixelwise:
+                match_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
             path = candidates[match_index]['path']
             if path in loaded_images:
                 addition = loaded_images[path]
@@ -99,12 +112,43 @@ def find_match_linear(rgb, candidates):
     closest_image = None
     least_distance = math.sqrt(255**2 + 255 ** 2 + 255 ** 2)
     for n, image in enumerate(candidates):
-        distance = math.sqrt((image['r'] - rgb['r'])**2 + (image['g'] - rgb['g'])**2 + (image['b'] - rgb['b'])**2)
+        distance = math.sqrt((image['r'] - rgb['r'])**2 + (image['g'] - rgb['g'])**2 + (image['b'] - rgb['b'])**2)  # get rid of this sqrt
         if distance < least_distance:
             closest_index = n
             least_distance = distance
     
     return closest_index
+
+def find_match_deep(original, candidates, comparison_fn):
+    # maybe combine with find_match_linear
+    closest_image = None
+    least_distance = None
+
+    for n, candidate in enumerate(candidates):
+        distance = comparison_fn(original, candidate['path'])
+        if not least_distance or distance < least_distance:
+            closest_index = n
+            least_distance = distance
+
+    return closest_index
+
+def compare_pixelwise(img, path, n = 300):
+    width, height = img.size
+    if path in image_cache:  # I think there may be a pythonic way to avoid this idiom; also, make this its own function
+        img2 = image_cache[path] 
+    else:
+        img2 = make_proportional(Image.open(path), width / height).resize((width, height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+        image_cache[path] = img2
+
+    pixels = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
+
+    diff = 0
+    for pixel in pixels:
+        pixel1 = img.getpixel((pixel[0], pixel[1]))
+        pixel2 = img2.getpixel((pixel[0], pixel[1]))
+        diff += (pixel1[0] - pixel2[0])**2 + (pixel1[1] - pixel2[1])**2 + (pixel1[2] - pixel2[2])**2
+
+    return diff
 
 def get_color_avg(pixels):
     # get the average color in a iterable of rgb pixels
@@ -229,6 +273,7 @@ def main(argv):
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
     arg_parser.add_argument('-s', '--sourcedirectory', dest = 'source_directory', metavar = 'DIRECTORY', help = 'use images from specified directory as "pieces" of the mosaic')
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
+    arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'compare images pixel by pixel instead of just average color')
     arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
     arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'pieces of the mosaic will have edges this many pixels long')
 
@@ -258,7 +303,8 @@ def main(argv):
                 sys.exit(0) 
 
         print 'making mosaigraph'
-        i, dict = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize)
+        i, dict = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize, pixelwise = args.pixelwise)
+
         if args.outfile:
             i.save(args.outfile)
         else:
