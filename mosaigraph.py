@@ -14,7 +14,7 @@ import re
 import struct
 import sys
 
-# TODO: add alternative means of comparing images (like something from scikit-img, or just pixel-wise comparison of images)
+# TODO: add alternative means of comparing images (like something from scikit-img)
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
 # TODO: benchmark preprocessing, see if it can be sped up
 
@@ -74,12 +74,12 @@ def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, new
 
         # currently, integration of the "pixelwise" option is ugly
         if pixelwise:
-            match_index = find_match_deep(oldPiece, candidates, compare_pixelwise)
+            match_index = find_match_deep(oldPiece, candidates, compare_pixelwise2)
 
         rgb = get_color_avg(get_n_pixels(oldPiece, 300))
 
         if unique:
-            # if unique, we don't worry about caching, but have to avoid reusing images, and not
+            # if unique, we don't worry about caching, but have to avoid reusing images. Also, we're not
             # using k-d trees for now (explained above).
             if not pixelwise: 
                 match_index = find_match_linear(rgb, candidates)
@@ -124,13 +124,47 @@ def find_match_deep(original, candidates, comparison_fn):
     closest_image = None
     least_distance = None
 
-    for n, candidate in enumerate(candidates):
-        distance = comparison_fn(original, candidate['path'])
+    for n, distance in enumerate(comparison_fn(original, candidates)):
         if not least_distance or distance < least_distance:
             closest_index = n
             least_distance = distance
 
     return closest_index
+
+def find_match_deep_orig(original, candidates, comparison_fn):
+      # maybe combine with find_match_linear
+      closest_image = None
+      least_distance = None
+
+      for n, candidate in enumerate(candidates):
+          distance = comparison_fn(original, candidate['path'])
+          if not least_distance or distance < least_distance:
+                closest_index = n
+                least_distance = distance
+
+      return closest_index
+
+def compare_pixelwise2(img, candidates, n = 300):
+    # compare efficiency of this with compare_pixelwise to see if faster
+    width, height = img.size
+    pairs = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
+    pixels = [img.getpixel((x, y)) for x, y in pairs ]
+
+    for candidate in candidates:
+        path = candidate['path']
+        if path in image_cache:  # I think there may be a pythonic way to avoid this idiom; also, make this its own function
+            pixels2 = image_cache[path]
+        else:
+            img2 = make_proportional(Image.open(path), width / height).resize((width, height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+            pixels2 = [img2.getpixel((x, y)) for x, y in pairs ]
+            image_cache[path] = pixels2
+
+        diff = 0
+        
+        for pixel1, pixel2 in zip(pixels, pixels2):
+            diff += abs(pixel1[0] - pixel2[0])**2 + abs(pixel1[1] - pixel2[1])**2 + abs(pixel1[2] - pixel2[2])**2
+        yield diff
+
 
 def compare_pixelwise(img, path, n = 300):
     width, height = img.size
@@ -141,13 +175,15 @@ def compare_pixelwise(img, path, n = 300):
         image_cache[path] = img2
 
     pixels = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
-
+    
     diff = 0
+    
     for pixel in pixels:
         pixel1 = img.getpixel((pixel[0], pixel[1]))
-        pixel2 = img2.getpixel((pixel[0], pixel[1]))
-        diff += (pixel1[0] - pixel2[0])**2 + (pixel1[1] - pixel2[1])**2 + (pixel1[2] - pixel2[2])**2
-
+        pixel2 = img2.getpixel((pixel[0], pixel[1]))  # probably don't need to sample the original image repeatedly
+        diff1 = abs(pixel1[0] - pixel2[0]) + abs(pixel1[1] - pixel2[1]) + abs(pixel1[2] - pixel2[2])
+        diff += diff1
+  
     return diff
 
 def get_color_avg(pixels):
