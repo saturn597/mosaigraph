@@ -14,27 +14,51 @@ import re
 import struct
 import sys
 
+# TODO: make the "sourceimages" option work - this is much more logical than requiring a db file for situations where we aren't using preprocessed information
+# TODO: test these various options, for preprocessing, for getting images from dbs, from directories, etc
+# TODO: Make this give appropriate errors in case the user requires uniqueness but doesn't have a big enough pool of images
 # TODO: add alternative means of comparing images (like something from scikit-img)
+# TODO: add option for changing sample sizes
+# TODO: Test in python 3
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
-# TODO: benchmark preprocessing, see if it can be sped up
+# TODO: profile preprocessing, see if it can be sped up
+# TODO: Use "" so I don't have to escape '
 
 image_cache = {}
 
-def make_mosaigraph(img, numPieces, dbtable, group = None, directory = None, newEdgeSize = 100, unique = False, randomize_order = False, pixelwise = False):
+def collect_candidates(dbtable, directory = None, group = None, paths = [], rgb_needed = False):
+    candidates = []
+    # TODO: correct behavior for groups? Also, this function is going to yield non image files when not rgb_needed
+
+    if not (directory or group or paths):
+        return list(dbtable.all())
+
+    if directory:
+        paths.extend(os.listdir(directory))
+
+    for path in paths:
+        path = unicode(path, sys.getfilesystemencoding()) # TODO: Does this need a unicode conversion?
+        full_path = os.path.abspath(path)  
+        new_candidate = dict(path = full_path)
+
+        if rgb_needed:
+            result = dbtable.find_one(path = full_path) or preprocess_image(full_path)
+            print "rgb gotten"
+            if result:
+                new_candidate = result
+            else:
+                continue
+
+        candidates.append(new_candidate)
+    print candidates
+    return candidates
+
+def make_mosaigraph(img, candidates, numPieces, newEdgeSize = 100, unique = False, randomize_order = False, pixelwise = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
 
-    # TODO: what if we get group AND directory?
-    if group:
-        candidates = list(dbtable.find(group = group))
-    elif directory:
-        process_images(get_images(directory))  # could conceivably do this as we're looking for matches (so we don't add an extra pass through all the images)
-        candidates = list(dbtable.find(directory = directory))
-    else:
-        candidates = list(dbtable.all())
-
-    if not unique:
+    if not unique and not pixelwise:
       # k-d trees are an efficient data structure for nearest neighbor search. However, it's difficult to exclude 
       # items from the search that we've already used. (At least given scipy's implementation). So 
       # for now only using them when we don't mind reusing images.
@@ -155,14 +179,17 @@ def compare_pixelwise2(img, candidates, n = 300):
         if path in image_cache:  # I think there may be a pythonic way to avoid this idiom; also, make this its own function
             pixels2 = image_cache[path]
         else:
-            img2 = make_proportional(Image.open(path), width / height).resize((width, height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+            try:
+                img2 = make_proportional(Image.open(path), width / height).resize((width, height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+            except IOError:
+                print('Couldn\'t process file {} as image'.format(path))
             pixels2 = [img2.getpixel((x, y)) for x, y in pairs ]
             image_cache[path] = pixels2
 
         diff = 0
         
         for pixel1, pixel2 in zip(pixels, pixels2):
-            diff += abs(pixel1[0] - pixel2[0])**2 + abs(pixel1[1] - pixel2[1])**2 + abs(pixel1[2] - pixel2[2])**2
+            diff += abs(pixel1[0] - pixel2[0]) + abs(pixel1[1] - pixel2[1]) + abs(pixel1[2] - pixel2[2])
         yield diff
 
 
@@ -274,25 +301,36 @@ def process_images(image_files, dbtable, group = None):
     for filename in image_files:
         path = unicode(filename, sys.getfilesystemencoding())
 
-        print path
-        if not dbtable.find_one(path = path):  # only do all the calculations if we haven't already checked this file
-            try: 
-                image = make_proportional(Image.open(path).convert(mode = "RGB"))
-            except (IOError, struct.error):
-                # IOError is usually because the file isn't an image file.
-                # TODO: look into what's causing struct.error
-                print(filename + " couldn't be processed")
-                continue
-            avg = get_color_avg(get_n_pixels(image, 300))
-            num += 1
-            print ("processed image number " + str(num) + " : " + path + " : " + str(avg))
+        if dbtable.find_one(path = path): # only do all the calculations if we haven't already checked this file
+            return
 
-            # build a new row to add to the db
-            new_row = dict(path = path, r = avg['r'], g = avg['g'], b = avg['b'], directory = os.path.dirname(path))
-            if group != None:  # using None as a value in an insert raises warnings, avoiding it
-                new_row['group'] = str(group)
+        new_row = preprocess_image(path)
 
-            dbtable.insert(new_row)
+        if not new_row:
+            print(path + " couldn't be processed")
+            continue
+
+        num += 1
+        print ("processed image number " + str(num) + " : " + path + " : " + str(avg))
+
+        # add group information to our image
+        if group != None:  # using None as a value in an insert raises warnings, avoiding it
+            new_row['group'] = str(group)
+
+        dbtable.insert(new_row)
+
+def preprocess_image(path):
+
+    try:
+        image = make_proportional(Image.open(path).convert(mode = "RGB"))
+    except (IOError, struct.error):
+        # IOError is usually because the file isn't an image file.
+        # TODO: look into what's causing struct.error
+        return None
+
+    avg = get_color_avg(get_n_pixels(image, 300))
+
+    return dict(path = os.path.abspath(path), r = avg['r'], g = avg['g'], b = avg['b'])
 
 
 def main(argv):
@@ -305,21 +343,22 @@ def main(argv):
     # options/argument for mosaic mode only
     arg_parser.add_argument('-j', '--json', metavar = 'FILE', help = 'produce a json file FILE that shows which images were used where in the mosaic')
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
-    arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE')
+    arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; if not specified, the mosaic will be opened in your default image viewer, but not saved; format of output file is determined by extension (so .jpg for jpg, .png for png)')
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
     arg_parser.add_argument('-s', '--sourcedirectory', dest = 'source_directory', metavar = 'DIRECTORY', help = 'use images from specified directory as "pieces" of the mosaic')
+    arg_parser.add_argument('-t', '--sourceimages', metavar = 'IMAGE', nargs = '+', help = 'construct mosaic drawing from this set of images')  # TODO: maybe get rid of sourcedirectory and switch this to -s
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
     arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'compare images pixel by pixel instead of just average color')
     arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
-    arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'pieces of the mosaic will have edges this many pixels long')
+    arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'each square piece of the resulting image will have edges this many pixels long; increase this value if the individual images are too pixelated and hard to make out, even when zoomed')
 
-    arg_parser.add_argument('filename', nargs = '?', help = 'the filename of the image we\'re making a mosaic of; the mosaic will look like this image')
+    arg_parser.add_argument('filename', nargs = '?', help = 'the filename of the image we\'re making a mosaic of')
 
     # option to turn on preprocessing mode
     arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -g and -d will be ignored')
 
     # options usable in both mosaic mode and preprocessing mode
-    arg_parser.add_argument('-d', '--dbfile', default = 'data.db', help = 'in mosaic mode, use images pointed to by this database file; in preprocessing mode, save the data to this file')
+    arg_parser.add_argument('-d', '--dbfile', default = 'data.db', help = 'in mosaic mode, construct mosaic using images pointed to by this database file; in preprocessing mode, save the data to this file')
     arg_parser.add_argument('-g', '--group', help = 'in mosaic mode, use only images from a previously defined group as "pieces" of the mosaic; in preprocessing mode, adds images we preprocess to the specified group')
 
     args = arg_parser.parse_args()
@@ -339,7 +378,10 @@ def main(argv):
                 sys.exit(0) 
 
         print 'making mosaigraph'
-        i, dict = make_mosaigraph(Image.open(args.filename), args.n, dbtable, group = args.group, directory = args.source_directory, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize, pixelwise = args.pixelwise)
+
+        candidates = collect_candidates(dbtable, directory = args.source_directory, group = args.group, paths = args.sourceimages, rgb_needed = not args.pixelwise)
+
+        i, dict = make_mosaigraph(Image.open(args.filename), candidates, args.n, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize, pixelwise = args.pixelwise)
 
         if args.outfile:
             i.save(args.outfile)
