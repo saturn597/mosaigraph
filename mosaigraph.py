@@ -18,7 +18,7 @@ import sys
 # TODO: work on adding more sensible output
 # TODO: Make this give appropriate errors in case the user requires uniqueness but doesn't have a big enough pool of images
 # TODO: add alternative means of comparing images (like something from scikit-img)
-# TODO: add option for changing sample sizes
+# TODO: add option for changing sample sizes - include option for sampling ALL pixels
 # TODO: Test in python 3
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
 # TODO: profile preprocessing, see if it can be sped up
@@ -292,9 +292,10 @@ def process_images(image_files, dbtable):
     # process a given iterable of image_files, finding and storing the "average" color of the images in 
     # the given database table
     num = 0
+    rows = []
 
     for filename in image_files:
-        path = unicode(filename, sys.getfilesystemencoding())
+        path = os.path.abspath(unicode(filename, sys.getfilesystemencoding()))
 
         if dbtable.find_one(path = path): # only do all the calculations if we haven't already checked this file
             return
@@ -306,9 +307,11 @@ def process_images(image_files, dbtable):
             continue
 
         num += 1
-        print ("processed image number " + str(num) + " : " + path + " : " + str(avg))
+        print ("processed image number " + str(num) + " : " + path + " : " + "r: {} g: {} b: {}".format(new_row['r'], new_row['g'], new_row['b']))
+        rows.append(new_row)
 
-        dbtable.insert(new_row)
+    print("Inserting rows into db...")
+    dbtable.insert_many(rows)  # might be better to do more often than just once at the end
 
 def preprocess_image(path):
 
@@ -321,7 +324,7 @@ def preprocess_image(path):
 
     avg = get_color_avg(get_n_pixels(image, 300))
 
-    return dict(path = os.path.abspath(path), r = avg['r'], g = avg['g'], b = avg['b'])
+    return dict(path = path, r = avg['r'], g = avg['g'], b = avg['b'])
 
 
 def main(argv):
