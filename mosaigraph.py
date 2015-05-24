@@ -14,17 +14,16 @@ import re
 import struct
 import sys
 
-# TODO: test these various options, for preprocessing, for getting images from dbs, from directories, etc
 # TODO: work on adding more sensible output
 # TODO: Make this give appropriate errors in case the user requires uniqueness but doesn't have a big enough pool of images
 # TODO: add alternative means of comparing images (like something from scikit-img)
 # TODO: add option for changing sample sizes - include option for sampling ALL pixels
 # TODO: Test in python 3
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
-# TODO: profile preprocessing, see if it can be sped up
 # TODO: Use "" so I don't have to escape '
 
 image_cache = {}
+comparison_points = []
 
 def collect_candidates(dbtable, paths = [], rgb_needed = False):
 
@@ -57,6 +56,7 @@ def collect_candidates(dbtable, paths = [], rgb_needed = False):
 
 def make_mosaigraph(img, candidates, numPieces, newEdgeSize = 100, unique = False, randomize_order = False, pixelwise = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
+
 
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
 
@@ -100,7 +100,9 @@ def make_mosaigraph(img, candidates, numPieces, newEdgeSize = 100, unique = Fals
 
         # currently, integration of the "pixelwise" option is ugly
         if pixelwise:
+            
             match_index = find_match_deep(oldPiece, candidates, compare_pixelwise2)
+            #match_index = find_match_deep_orig(oldPiece, candidates, compare_pixelwise)
 
         rgb = get_color_avg(get_n_pixels(oldPiece, 300))
 
@@ -173,8 +175,12 @@ def find_match_deep_orig(original, candidates, comparison_fn):
 def compare_pixelwise2(img, candidates, n = 300):
     # compare efficiency of this with compare_pixelwise to see if faster
     width, height = img.size
-    pairs = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
-    pixels = [img.getpixel((x, y)) for x, y in pairs ]
+
+    global comparison_points  # Need these points to be consistent between calls, or data from the image_cache will be bogus
+    if not comparison_points:
+        comparison_points = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
+
+    pixels = [img.getpixel((x, y)) for x, y in comparison_points ]
 
     for candidate in candidates:
         path = candidate['path']
@@ -185,7 +191,7 @@ def compare_pixelwise2(img, candidates, n = 300):
                 img2 = make_proportional(Image.open(path), width / height).resize((width, height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
             except IOError:
                 print('Couldn\'t process file {} as image'.format(path))
-            pixels2 = [img2.getpixel((x, y)) for x, y in pairs ]
+            pixels2 = [img2.getpixel((x, y)) for x, y in comparison_points ]
             image_cache[path] = pixels2
 
         diff = 0
@@ -311,7 +317,7 @@ def process_images(image_files, dbtable):
         rows.append(new_row)
 
     print("Inserting rows into db...")
-    dbtable.insert_many(rows)  # might be better to do more often than just once at the end
+    dbtable.insert_many(rows)  # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
 
 def preprocess_image(path):
 
@@ -325,7 +331,6 @@ def preprocess_image(path):
     avg = get_color_avg(get_n_pixels(image, 300))
 
     return dict(path = path, r = avg['r'], g = avg['g'], b = avg['b'])
-
 
 def main(argv):
     # Process command line args. Depending on the result, either make a new photomosaic and display or save it (mosaic mode), or simply
