@@ -148,7 +148,7 @@ def make_mosaigraph2(img, candidates, numPieces, newEdgeSize = 100, unique = Fal
         undone_pieces = [piece for piece in the_pieces if not piece.match]
         while undone_pieces:
             passnum += 1
-            print "pass {}".format(len(undone_pieces))
+            print "beginning pass: {} images remaining".format(len(undone_pieces))
             get_matches(candidates, undone_pieces, pixelwise, unique)
             matches = set([piece.match for piece in the_pieces if piece.match])
             undone_pieces = [piece for piece in the_pieces if not piece.match]
@@ -222,22 +222,22 @@ def make_mosaigraph(img, candidates, numPieces, newEdgeSize = 100, unique = Fals
         # currently, integration of the "pixelwise" option is ugly
         if pixelwise:
             
-            match_index = find_match_deep(oldPiece, candidates, compare_pixelwise2)
-            #match_index = find_match_deep_orig(oldPiece, candidates, compare_pixelwise)
-
-        rgb = get_color_avg(get_n_pixels(oldPiece, 300))
+            match_index = find_match(oldPiece, candidates, compare_pixelwise2)
+            #match_index = find_match_orig(oldPiece, candidates, compare_pixelwise)
 
         if unique:
             # if unique, we don't worry about caching, but have to avoid reusing images. Also, we're not
             # using k-d trees for now (explained above).
             if not pixelwise: 
-                match_index = find_match_linear(rgb, candidates)
+                rgb = get_color_avg(get_n_pixels(oldPiece, 300))
+                match_index = find_match(oldPiece, candidates, compare_rgb)
             path = candidates[match_index]['path']
             addition = prep_image(path)
             candidates.pop(match_index)
 
         else:
             if not pixelwise:
+                rgb = get_color_avg(get_n_pixels(oldPiece, 300))
                 match_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
             path = candidates[match_index]['path']
             if path in loaded_images:
@@ -254,6 +254,7 @@ def make_mosaigraph(img, candidates, numPieces, newEdgeSize = 100, unique = Fals
     print("")
     return newImg, paths
 
+"""
 def find_match_linear(rgb, candidates):
     # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
     # returns the index of the match within candidates 
@@ -267,7 +268,8 @@ def find_match_linear(rgb, candidates):
             least_distance = distance
     
     return closest_index
-
+"""
+"""
 def find_match_linear2(rgb, candidates):
     # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
     # returns the index of the match within candidates 
@@ -282,9 +284,10 @@ def find_match_linear2(rgb, candidates):
             least_distance = distance
     
     return least_distance, closest_index
+"""
 
 
-def find_match_deep(original, candidates, comparison_fn):
+def find_match(original, candidates, comparison_fn):
     # maybe combine with find_match_linear
     closest_image = None
     least_distance = None
@@ -296,7 +299,7 @@ def find_match_deep(original, candidates, comparison_fn):
 
     return closest_index
 
-def find_match_deep_orig(original, candidates, comparison_fn):
+def find_match_orig(original, candidates, comparison_fn):
       # maybe combine with find_match_linear
       closest_image = None
       least_distance = None
@@ -337,6 +340,11 @@ def compare_pixelwise2(img, candidates, n = 300):
             diff += abs(pixel1[0] - pixel2[0]) + abs(pixel1[1] - pixel2[1]) + abs(pixel1[2] - pixel2[2])
         yield diff
 
+
+def compare_rgb(original, candidates):
+    rgb = get_color_avg(get_n_pixels(original, 300))
+    for candidate in candidates:
+        yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
 
 def compare_pixelwise(img, img2 = None, path = None, n = 300):
     # combine with compare_pixelwise2
@@ -489,7 +497,7 @@ def main(argv):
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
     arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; if not specified, the mosaic will be opened in your default image viewer, but not saved; format of output file is determined by extension (so .jpg for jpg, .png for png)')
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
-    arg_parser.add_argument('-s', '--sourceimages', metavar = 'IMAGE', nargs = '+', help = 'construct mosaic drawing from this set of images')
+    arg_parser.add_argument('-s', '--sourceimages', metavar = 'IMAGE', nargs = '+', help = 'draw from this set of images in constructing mosaic')
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
     arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'compare images pixel by pixel instead of just average color')
     arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
@@ -511,6 +519,7 @@ def main(argv):
 
     if args.preprocess:
         process_images(args.preprocess, dbtable)
+
     elif args.filename:
 
         if args.outfile and os.path.exists(args.outfile):
@@ -520,6 +529,8 @@ def main(argv):
         
         print("Making mosaic out of {}...".format(args.filename))
         
+        # switch to make_mosaigraph2 and collect_candidates2 to attempt the alternative strategy - using my own wrapper object for images, and using alternative "uniqueness" strategy
+
         candidates = list(collect_candidates(dbtable, paths = args.sourceimages, rgb_needed = not args.pixelwise))
         
         print("Using pool of {} candidate images".format(len(candidates)))
@@ -540,6 +551,7 @@ def main(argv):
             print("Saving json output as {}".format(args.json))
             with open(args.json, 'w') as f:
                 json.dump(dict, f)
+
     else:
         print("Nothing to do!\n")
         arg_parser.print_help()
