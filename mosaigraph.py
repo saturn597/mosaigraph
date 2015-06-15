@@ -22,9 +22,101 @@ import sys
 # TODO: Test in python 3
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
 # TODO: Use "" so I don't have to escape '
+    
 
-image_cache = {}
-comparison_points = []
+def get_matcher(pixelwise, unique, candidates, sample_size, width = 1000, height = 1000):
+    # TODO: can width and height be removed as parameters? i.e., does passing the actual width/height of the images improve the result?
+    if pixelwise:
+        return PixelwiseMatcher(candidates, sample_size, unique, width, height)
+    elif unique:
+        return RgbMatcher(candidates, sample_size, unique)
+    else:
+        return KDTreeRgbMatcher(candidates, sample_size)
+
+class Matcher(object):
+    def __init__(self):
+        self.unique = False
+
+    def get_distances(self, image, candidate):
+        pass
+
+    def get_match(self, image):
+        closest_image = None
+        least_distance = None
+
+        for n, distance in enumerate(self.get_distances(image)):
+            if not least_distance or distance < least_distance:
+                closest_index = n
+                least_distance = distance
+
+        result = self.candidates[closest_index]
+
+        if self.unique:
+            self.candidates.pop(closest_index)  # consider keeping a separate record of what we've used instead
+
+        return result
+
+class PixelwiseMatcher(Matcher):
+    def __init__(self, candidates, sample_size, unique, width = 1000, height = 1000):
+        # TODO: Can omit width/height as parameters if arbitrary resizing works just as well (in TODO below)
+        self.candidates = list(candidates)  # make our own copy since we may mutate the list
+        self.unique = unique
+        self.sample_size = sample_size
+        self.pixel_cache = {}
+        self.width = width
+        self.height = height
+        self.pts_to_sample = [(random.randint(0, self.width - 1), random.randint(0, self.height - 1)) for i in range(sample_size)]  # maybe use randrange
+
+    def get_distances(self, image):
+        image = image.resize((self.width, self.height))  # TODO: Does it look just as good when we resize each "piece" arbitrarily like this? Or should we use the original size of the image?
+        pixels = [image.getpixel((x, y)) for x, y in self.pts_to_sample]
+        
+        for candidate in self.candidates:
+            path = candidate['path']
+
+            if path in self.pixel_cache:
+                candidate_pixels = self.pixel_cache[path]  # look into more python way to do this?
+            else:
+                try: 
+                    candidate_image = make_proportional(Image.open(path), self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+                except IOError:  # TODO: do exception checking wherever we have an Image.open
+                    print('Couldn\'t process file {} as image'.format(path))
+                    continue
+                candidate_pixels = [candidate_image.getpixel((x, y)) for x, y in self.pts_to_sample]
+                self.pixel_cache[path] = candidate_pixels
+
+            diff = 0
+            for pixel1, pixel2 in zip(pixels, candidate_pixels):
+                diff += abs(pixel1[0] - pixel2[0]) + abs(pixel1[1] - pixel2[1]) + abs(pixel1[2] - pixel2[2])
+            yield diff
+
+                    
+        
+class KDTreeRgbMatcher(Matcher):
+    # k-d trees are an efficient data structure for nearest neighbor search. However, using them makes it difficult to exclude 
+    # items from the search that we've already used. (At least given scipy's implementation of k-d trees). So 
+    # for now only using them when we don't mind reusing images.
+    def __init__(self, candidates, sample_size):
+        self.candidates = list(candidates)
+        self.sample_size = sample_size
+        self.kdtree = spatial.KDTree([(item['r'], item['g'], item['b']) for item in candidates])
+
+    def get_match(self, image):
+        rgb = get_color_avg(get_n_pixels(image, self.sample_size))
+        index = self.kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
+        return self.candidates[index]
+
+class RgbMatcher(Matcher):
+    def __init__(self, candidates, sample_size, unique = False):
+        self.candidates = list(candidates)
+        self.sample_size = sample_size  # this only matters to the sample we take of images we're trying to find a match for; the candidates have already been sampled
+        self.unique = unique
+
+    def get_distances(self, image):
+        rgb = get_color_avg(get_n_pixels(image, self.sample_size))
+        for candidate in self.candidates:
+            yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
+
 
 class ImageData(object):
     def __init__(self, path = None, image = None, x = None, y = None, rgb = None):
@@ -110,11 +202,11 @@ def get_matches(images, candidates, pixelwise = False, unique = False):
             match.match = image
 
 
-def get_piece(image, edgeSize, x, y):
-    new_image = image.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
+def get_piece(image, edge_length, x, y):
+    new_image = image.crop((x * edge_length, y * edge_length, (x + 1) * edge_length, (y + 1) * edge_length))  
     return ImageData(image = new_image, x = x, y = y)
 
-def make_mosaigraph2(img, candidates, numPieces, newEdgeSize = 100, unique = False, randomize_order = False, pixelwise = False):
+def make_mosaigraph2(img, candidates, num_pieces, edge_length = 100, unique = False, randomize_order = False, pixelwise = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
@@ -122,137 +214,133 @@ def make_mosaigraph2(img, candidates, numPieces, newEdgeSize = 100, unique = Fal
 
     width, height = img.size
         
-    edgeSize = get_best_edge_size(width, height, numPieces)
-    numX = width // edgeSize
-    numY = height // edgeSize
-    numPieces = numX * numY
-    print("Dividing mosaic into {} pieces".format(numPieces))
+    edge_length = get_best_edge_length(width, height, num_pieces)
+    numX = width // edge_length
+    numY = height // edge_length
+    num_pieces = numX * numY
+    print("Dividing mosaic into {} pieces".format(num_pieces))
 
-    newImg = Image.new(img.mode, (width // edgeSize * newEdgeSize, height // edgeSize * newEdgeSize))
+    result_image = Image.new(img.mode, (width // edge_length * edge_length, height // edge_length * edge_length))
 
     currentNum = 0
 
-    the_pieces = [get_piece(img, edgeSize, x, y) for x in range(0, numX) for y in range(0, numY)]
+    piece_ids = [get_piece(img, edge_length, x, y) for x in range(0, numX) for y in range(0, numY)]
          
     # if we have a limited pool of images to pick from, pieces of the mosaic added later are likely to look
     # worse than ones added earlier, as we run out of good matches. Offering option to randomize the order in 
     # which we add pieces to the mosaic so that one region doesn't look better/worse than another. Not 
     # confident this is necessarily better - seems to lead to an image that's equally bad all over. 
     if randomize_order:
-        random.shuffle(the_pieces)
+        random.shuffle(piece_ids)
    
     paths = []
     passnum = 0
 
     if unique:
-        undone_pieces = [piece for piece in the_pieces if not piece.match]
+        undone_pieces = [piece for piece in piece_ids if not piece.match]
         while undone_pieces:
             passnum += 1
             print "beginning pass: {} images remaining".format(len(undone_pieces))
             get_matches(candidates, undone_pieces, pixelwise, unique)
-            matches = set([piece.match for piece in the_pieces if piece.match])
-            undone_pieces = [piece for piece in the_pieces if not piece.match]
+            matches = set([piece.match for piece in piece_ids if piece.match])
+            undone_pieces = [piece for piece in piece_ids if not piece.match]
             candidates = [candidate for candidate in candidates if candidate not in matches]
     else:
-        get_matches(the_pieces, candidates, pixelwise, unique)
+        get_matches(piece_ids, candidates, pixelwise, unique)
 
     def prep_image(image):
         proportional = make_proportional(image.get_image())
-        return proportional.resize((newEdgeSize, newEdgeSize))
+        return proportional.resize((edge_length, edge_length))
     
-    print the_pieces
-    for piece in the_pieces:
+    print piece_ids
+    for piece in piece_ids:
         new_piece = piece.match
         try: 
-            newImg.paste(prep_image(new_piece), (piece.x * newEdgeSize, piece.y * newEdgeSize))
+            result_image.paste(prep_image(new_piece), (piece.x * edge_length, piece.y * edge_length))
         except:
             continue
         paths.append({ 'x': piece.x, 'y': piece.y, 'path': new_piece.path })
         currentNum += 1  # maybe use enumerate in for instead
-        sys.stdout.write("\rCompleted piece " + str(currentNum) + " out of " + str(numPieces))
+        sys.stdout.write("\rCompleted piece " + str(currentNum) + " out of " + str(num_pieces))
         sys.stdout.flush()
     print("")
 
-    return newImg, paths
+    return result_image, paths
 
 
-def make_mosaigraph(img, candidates, numPieces, newEdgeSize = 100, unique = False, randomize_order = False, pixelwise = False):
+def make_mosaigraph(img, candidates, num_pieces, edge_length = 100, unique = False, randomize_order = False, pixelwise = False, sample_size = 300):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
+    # img: the base image
+    # candidates: the pool of images from which we'll compose the mosaic
+    # num_pieces: the number of square pieces we want the mosaic to have
+    #   Actual number of pieces may differ. We are restricted by the fact that the pieces are square-shaped. Also, the lengths of the edges, as well as the number of
+    #   divisions we make along the x and y axes, must be integers.
+    # edge_length: the pieces of the mosaic will have edges this long
+    # unique: if True, candidate images won't be reused within a given mosaic
+    # randomize_order: randomize the order in which we add pieces to the mosaic
+    # pixelwise: determines the method for matching candidates to the specific section of the base image that they are intended to stand for
+    #   If True, two same-sized images match if the color of pixel (x, y) in image A is likely to be similar to that of pixel (x, y) in image B, for any given (x, y).
+    #   If False, two images match if the overall color of one is close to the overall color of the other, based on averaging a sample drawn from all pixels.
+    #   Pixelwise matches yield better results but are slow.
+    
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
 
-    if not unique and not pixelwise:
-      # k-d trees are an efficient data structure for nearest neighbor search. However, it's difficult to exclude 
-      # items from the search that we've already used. (At least given scipy's implementation). So 
-      # for now only using them when we don't mind reusing images.
-      kdtree = spatial.KDTree([(item['r'], item['g'], item['b']) for item in candidates])
+    log = []  # record of which images we've used where in the mosaic so we can report back to our caller
+    loaded_images = {}  # loading images is a very expensive operation - keep a cache of loaded images to minimize this
 
-    width, height = img.size
-        
-    edgeSize = get_best_edge_size(width, height, numPieces)
-    numX = width // edgeSize
-    numY = height // edgeSize
-    numPieces = numX * numY
-    print("Dividing mosaic into {} pieces".format(numPieces))
-
-    newImg = Image.new(img.mode, (width // edgeSize * newEdgeSize, height // edgeSize * newEdgeSize))
-
-    currentNum = 0
-
-    the_pieces = [(x, y) for x in range(0, numX) for y in range(0, numY)]
-
-    # if we have a limited pool of images to pick from, pieces of the mosaic added later are likely to look
-    # worse than ones added earlier, as we run out of good matches. Offering option to randomize the order in 
-    # which we add pieces to the mosaic so that one region doesn't look better/worse than another. Not 
-    # confident this is necessarily better - seems to lead to an image that's equally bad all over. 
-    if randomize_order:
-        random.shuffle(the_pieces)
-
-    loaded_images = {}  # loading images is our most expensive operation; cache them so we don't need to load 2x
-    
     def prep_image(path):
+        # open, scale and crop an image so we can add it to our mosaic
         new_piece = Image.open(path)
         proportional = make_proportional(new_piece)
-        return proportional.resize((newEdgeSize, newEdgeSize))
+        return proportional.resize((edge_length, edge_length))
 
-    paths = []
-    for x, y in the_pieces:
-        oldPiece = img.crop((x * edgeSize, y * edgeSize, (x + 1) * edgeSize, (y + 1) * edgeSize))  
+    width, height = img.size
+    
+    edge_length_orig = get_best_edge_length(width, height, num_pieces)  # original image will be broken into pieces of this length
+    numX = width // edge_length_orig
+    numY = height // edge_length_orig
 
-        # currently, integration of the "pixelwise" option is ugly
-        if pixelwise:
-            
-            match_index = find_match(oldPiece, candidates, compare_pixelwise2)
-            #match_index = find_match_orig(oldPiece, candidates, compare_pixelwise)
+    actual_num_pieces = numX * numY
+    print("Dividing mosaic into {} pieces".format(actual_num_pieces))
 
-        if unique:
-            # if unique, we don't worry about caching, but have to avoid reusing images. Also, we're not
-            # using k-d trees for now (explained above).
-            if not pixelwise: 
-                rgb = get_color_avg(get_n_pixels(oldPiece, 300))
-                match_index = find_match(oldPiece, candidates, compare_rgb)
-            path = candidates[match_index]['path']
-            addition = prep_image(path)
-            candidates.pop(match_index)
+    piece_ids = [(x, y) for x in range(0, numX) for y in range(0, numY)]
 
+    # On "unique" mode, we can run low on good images to use. Randomizing the order in which we add each piece to the mosaic
+    # prevents having one section of the mosaic look worse just because it was made later. (Though can just lead to an
+    # image that looks equally bad all over).
+    if randomize_order:
+        random.shuffle(piece_ids)
+
+    # create a blank image - we'll paste the mosaic onto this as we assemble it, piece by piece
+    result_image = Image.new(img.mode, (numX * edge_length, numY * edge_length))
+
+    # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
+    matcher = get_matcher(pixelwise, unique, candidates, sample_size)
+
+    # now iterate through each piece in the original image, find matching images among the candidates, and paste matches into result_image
+    for current_num, (x, y) in enumerate(piece_ids):
+        # TODO: now that I'm switching to "objects" for matching, compare with older versions to see if I lost any quality in resulting mosaics
+        old_piece = img.crop((x * edge_length_orig, y * edge_length_orig, (x + 1) * edge_length_orig, (y + 1) * edge_length_orig))
+
+        match = matcher.get_match(old_piece)
+        path = match['path']
+
+        if path in loaded_images:  # TODO: Maybe matcher should handle caching
+            new_piece = loaded_images[path]  # get image from the cache if we can
         else:
-            if not pixelwise:
-                rgb = get_color_avg(get_n_pixels(oldPiece, 300))
-                match_index = kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
-            path = candidates[match_index]['path']
-            if path in loaded_images:
-                addition = loaded_images[path]
-            else:
-                addition = prep_image(path)
-                loaded_images[path] = addition  # if we must open the image, add it to our cache
+            new_piece = prep_image(path)
         
-        paths.append( {'x': x, 'y': y, 'path': path } )
-        newImg.paste(addition, (x * newEdgeSize, y * newEdgeSize))
-        currentNum += 1
-        sys.stdout.write("\rCompleted piece " + str(currentNum) + " out of " + str(numPieces))
+        if not unique: 
+            # no point in caching if unique, since we load a different image each time
+            loaded_images[path] = new_piece  # if we must load the image, add it to our cache
+
+        log.append({ 'x': x, 'y': y, 'path': path })
+        result_image.paste(new_piece, (x * edge_length, y * edge_length))
+        sys.stdout.write("\rCompleted piece " + str(current_num + 1) + " out of " + str(actual_num_pieces))
         sys.stdout.flush()
     print("")
-    return newImg, paths
+    return result_image, log 
 
 """
 def find_match_linear(rgb, candidates):
@@ -288,7 +376,6 @@ def find_match_linear2(rgb, candidates):
 
 
 def find_match(original, candidates, comparison_fn):
-    # maybe combine with find_match_linear
     closest_image = None
     least_distance = None
 
@@ -312,14 +399,19 @@ def find_match_orig(original, candidates, comparison_fn):
 
       return closest_index
 
+def compare_rgb(original, candidates):
+    rgb = get_color_avg(get_n_pixels(original, 300))
+    for candidate in candidates:
+        yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
+
 def compare_pixelwise2(img, candidates, n = 300):
     width, height = img.size
 
-    global comparison_points  # Need these points to be consistent between calls, or data from the image_cache will be bogus
-    if not comparison_points:
-        comparison_points = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
+    global pts_to_sample  # Need these points to be consistent between calls, or data from the image_cache will be bogus
+    if not pts_to_sample:
+        pts_to_sample = [(random.randint(0, width - 1), random.randint(0, height - 1)) for i in range(n)]
 
-    pixels = [img.getpixel((x, y)) for x, y in comparison_points ]
+    pixels = [img.getpixel((x, y)) for x, y in pts_to_sample]
 
     for candidate in candidates:
         path = candidate['path']
@@ -331,7 +423,7 @@ def compare_pixelwise2(img, candidates, n = 300):
             except IOError:
                 print('Couldn\'t process file {} as image'.format(path))
                 continue
-            pixels2 = [img2.getpixel((x, y)) for x, y in comparison_points ]
+            pixels2 = [img2.getpixel((x, y)) for x, y in pts_to_sample]
             image_cache[path] = pixels2
 
         diff = 0
@@ -340,11 +432,6 @@ def compare_pixelwise2(img, candidates, n = 300):
             diff += abs(pixel1[0] - pixel2[0]) + abs(pixel1[1] - pixel2[1]) + abs(pixel1[2] - pixel2[2])
         yield diff
 
-
-def compare_rgb(original, candidates):
-    rgb = get_color_avg(get_n_pixels(original, 300))
-    for candidate in candidates:
-        yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
 
 def compare_pixelwise(img, img2 = None, path = None, n = 300):
     # combine with compare_pixelwise2
@@ -401,16 +488,16 @@ def get_n_pixels(img, n):
         y = random.randint(0, height - 1) 
         yield img.getpixel((x, y))
 
-def get_best_edge_size(width, height, numPieces):
-    # If we have a rectangle of width and height, and we want to divide it into numPieces squares of equal size
-    # how long should each square's sides be to get as close as possible to numPieces?
+def get_best_edge_length(width, height, num_pieces):
+    # If we have a rectangle of width and height, and we want to divide it into num_pieces squares of equal size
+    # how long should each square's sides be to get as close as possible to num_pieces?
  
     # get an initial estimate
     # maybe would be simpler to just start with an estimate of 1, then iterate up
-    currentEstimate = int(math.sqrt(width * height / numPieces))
+    currentEstimate = int(math.sqrt(width * height / num_pieces))
 
     # get the difference between the number of pieces this gives and the number we want
-    signedDiff = (width // currentEstimate) * (height // currentEstimate) - numPieces
+    signedDiff = (width // currentEstimate) * (height // currentEstimate) - num_pieces
     lastDiff = abs(signedDiff)
 
     # if our estimate gets us the exact right number of pieces, we're done
@@ -425,7 +512,7 @@ def get_best_edge_size(width, height, numPieces):
     # if the difference between what we get and what we want increases, we've gone too far
     while True:
         currentEstimate += step
-        currentDiff = abs((width // currentEstimate) * (height // currentEstimate) - numPieces)
+        currentDiff = abs((width // currentEstimate) * (height // currentEstimate) - num_pieces)
         if currentDiff > lastDiff:
             return currentEstimate - step
         lastDiff = currentDiff
@@ -514,6 +601,7 @@ def main(argv):
     args = arg_parser.parse_args()
     
     dbname = 'sqlite:///' + args.dbfile
+
     db = dataset.connect(dbname)
     dbtable = db['image']
 
@@ -536,9 +624,9 @@ def main(argv):
         print("Using pool of {} candidate images".format(len(candidates)))
         
         input_image = Image.open(args.filename)
-        i, dict = make_mosaigraph(input_image, candidates, args.n, unique = args.unique, newEdgeSize = args.piecesize, randomize_order = args.randomize, pixelwise = args.pixelwise)
+        i, dict = make_mosaigraph(input_image, candidates, args.n, unique = args.unique, edge_length = args.piecesize, randomize_order = args.randomize, pixelwise = args.pixelwise)
         
-        print("New mosaic produced with average pixelwise difference {}".format(compare_pixelwise(input_image, i, n = 300) / 1200))
+        #print("New mosaic produced with average pixelwise difference {}".format(compare_pixelwise(input_image, i, n = 300) / 1200))  TODO: Make this line work again
 
         if args.outfile:
             print("Saving mosaic as {}".format(args.outfile))
