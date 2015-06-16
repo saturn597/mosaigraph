@@ -33,6 +33,7 @@ def get_matcher(pixelwise, unique, candidates, sample_size, width = 1000, height
     else:
         return KDTreeRgbMatcher(candidates, sample_size)
 
+
 class Matcher(object):
     def __init__(self):
         self.unique = False
@@ -56,6 +57,7 @@ class Matcher(object):
 
         return result
 
+
 class PixelwiseMatcher(Matcher):
     def __init__(self, candidates, sample_size, unique, width = 1000, height = 1000):
         # TODO: Can omit width/height as parameters if arbitrary resizing works just as well (in TODO below)
@@ -67,6 +69,28 @@ class PixelwiseMatcher(Matcher):
         self.height = height
         self.pts_to_sample = [(random.randint(0, self.width - 1), random.randint(0, self.height - 1)) for i in range(sample_size)]  # maybe use randrange
 
+        self.process_candidates()
+
+    def process_candidates(self):
+        total_num = len(self.candidates)  # second time this length has been retrieved - can this be avoided?
+        print('Processing candidate images...')
+
+        for current_num, candidate in enumerate(self.candidates):
+            path = candidate['path']
+
+            try: 
+                candidate_image = make_proportional(Image.open(path), self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+            except IOError:  # TODO: do exception checking wherever we have an Image.open
+                print('Couldn\'t process file {} as image'.format(path))
+                continue
+
+            candidate_pixels = [candidate_image.getpixel((x, y)) for x, y in self.pts_to_sample]
+            self.pixel_cache[path] = candidate_pixels
+            sys.stdout.write("\rProcessed candidate {} out of {}".format(current_num, total_num))
+            sys.stdout.flush()
+
+        print("")
+
     def get_distances(self, image):
         image = image.resize((self.width, self.height))  # TODO: Does it look just as good when we resize each "piece" arbitrarily like this? Or should we use the original size of the image?
         pixels = [image.getpixel((x, y)) for x, y in self.pts_to_sample]
@@ -74,28 +98,15 @@ class PixelwiseMatcher(Matcher):
         for candidate in self.candidates:
             path = candidate['path']
 
-            if path in self.pixel_cache:
-                candidate_pixels = self.pixel_cache[path]  # look into more python way to do this?
-            else:
-                try: 
-                    candidate_image = make_proportional(Image.open(path), self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
-                except IOError:  # TODO: do exception checking wherever we have an Image.open
-                    print('Couldn\'t process file {} as image'.format(path))
-                    continue
-                candidate_pixels = [candidate_image.getpixel((x, y)) for x, y in self.pts_to_sample]
-                self.pixel_cache[path] = candidate_pixels
+            candidate_pixels = self.pixel_cache[path]  
 
             diff = 0
             for pixel1, pixel2 in zip(pixels, candidate_pixels):
                 diff += abs(pixel1[0] - pixel2[0]) + abs(pixel1[1] - pixel2[1]) + abs(pixel1[2] - pixel2[2])
             yield diff
 
-                    
-        
+
 class KDTreeRgbMatcher(Matcher):
-    # k-d trees are an efficient data structure for nearest neighbor search. However, using them makes it difficult to exclude 
-    # items from the search that we've already used. (At least given scipy's implementation of k-d trees). So 
-    # for now only using them when we don't mind reusing images.
     def __init__(self, candidates, sample_size):
         self.candidates = list(candidates)
         self.sample_size = sample_size
@@ -106,7 +117,11 @@ class KDTreeRgbMatcher(Matcher):
         index = self.kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
         return self.candidates[index]
 
+
 class RgbMatcher(Matcher):
+    # k-d trees are an efficient data structure for nearest neighbor search. However, using them makes it difficult to exclude 
+    # items from the search that we've already used. (At least given scipy's implementation of k-d trees). So 
+    # for now only using them when we don't mind reusing images - so we need a non-KD-tree Rgb Matcher.
     def __init__(self, candidates, sample_size, unique = False):
         self.candidates = list(candidates)
         self.sample_size = sample_size  # this only matters to the sample we take of images we're trying to find a match for; the candidates have already been sampled
@@ -222,7 +237,7 @@ def make_mosaigraph2(img, candidates, num_pieces, edge_length = 100, unique = Fa
 
     result_image = Image.new(img.mode, (width // edge_length * edge_length, height // edge_length * edge_length))
 
-    currentNum = 0
+    current_num = 0
 
     piece_ids = [get_piece(img, edge_length, x, y) for x in range(0, numX) for y in range(0, numY)]
          
@@ -260,8 +275,8 @@ def make_mosaigraph2(img, candidates, num_pieces, edge_length = 100, unique = Fa
         except:
             continue
         paths.append({ 'x': piece.x, 'y': piece.y, 'path': new_piece.path })
-        currentNum += 1  # maybe use enumerate in for instead
-        sys.stdout.write("\rCompleted piece " + str(currentNum) + " out of " + str(num_pieces))
+        current_num += 1  # maybe use enumerate in for instead
+        sys.stdout.write("\rCompleted piece " + str(current_num) + " out of " + str(num_pieces))
         sys.stdout.flush()
     print("")
 
@@ -289,12 +304,6 @@ def make_mosaigraph(img, candidates, num_pieces, edge_length = 100, unique = Fal
     log = []  # record of which images we've used where in the mosaic so we can report back to our caller
     loaded_images = {}  # loading images is a very expensive operation - keep a cache of loaded images to minimize this
 
-    def prep_image(path):
-        # open, scale and crop an image so we can add it to our mosaic
-        new_piece = Image.open(path)
-        proportional = make_proportional(new_piece)
-        return proportional.resize((edge_length, edge_length))
-
     width, height = img.size
     
     edge_length_orig = get_best_edge_length(width, height, num_pieces)  # original image will be broken into pieces of this length
@@ -320,7 +329,7 @@ def make_mosaigraph(img, candidates, num_pieces, edge_length = 100, unique = Fal
 
     # now iterate through each piece in the original image, find matching images among the candidates, and paste matches into result_image
     for current_num, (x, y) in enumerate(piece_ids):
-        # TODO: now that I'm switching to "objects" for matching, compare with older versions to see if I lost any quality in resulting mosaics
+        # TODO: now that I'm switching to using matching objects, compare with older versions to see if I lost any quality in resulting mosaics
         old_piece = img.crop((x * edge_length_orig, y * edge_length_orig, (x + 1) * edge_length_orig, (y + 1) * edge_length_orig))
 
         match = matcher.get_match(old_piece)
@@ -329,7 +338,7 @@ def make_mosaigraph(img, candidates, num_pieces, edge_length = 100, unique = Fal
         if path in loaded_images:  # TODO: Maybe matcher should handle caching
             new_piece = loaded_images[path]  # get image from the cache if we can
         else:
-            new_piece = prep_image(path)
+            new_piece = make_proportional(Image.open(path)).resize((edge_length, edge_length))
         
         if not unique: 
             # no point in caching if unique, since we load a different image each time
@@ -339,40 +348,9 @@ def make_mosaigraph(img, candidates, num_pieces, edge_length = 100, unique = Fal
         result_image.paste(new_piece, (x * edge_length, y * edge_length))
         sys.stdout.write("\rCompleted piece " + str(current_num + 1) + " out of " + str(actual_num_pieces))
         sys.stdout.flush()
+
     print("")
     return result_image, log 
-
-"""
-def find_match_linear(rgb, candidates):
-    # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
-    # returns the index of the match within candidates 
-
-    closest_image = None
-    least_distance = math.sqrt(255**2 + 255 ** 2 + 255 ** 2)
-    for n, image in enumerate(candidates):
-        distance = math.sqrt((image['r'] - rgb['r'])**2 + (image['g'] - rgb['g'])**2 + (image['b'] - rgb['b'])**2)  # get rid of this sqrt
-        if distance < least_distance:
-            closest_index = n
-            least_distance = distance
-    
-    return closest_index
-"""
-"""
-def find_match_linear2(rgb, candidates):
-    # given an iterable of candidate rgb values, find the one that most closely matches "rgb"
-    # returns the index of the match within candidates 
-
-    closest_image = None
-    least_distance = math.sqrt(255**2 + 255 ** 2 + 255 ** 2)
-    for n, candidate in enumerate(candidates):
-        rgb2 = candidate.get_rgb()
-        distance = math.sqrt((rgb[0] - rgb2[0])**2 + (rgb[1] - rgb2[1])**2 + (rgb[2] - rgb2[2])**2)  # get rid of this sqrt
-        if distance < least_distance:
-            closest_index = n
-            least_distance = distance
-    
-    return least_distance, closest_index
-"""
 
 
 def find_match(original, candidates, comparison_fn):
