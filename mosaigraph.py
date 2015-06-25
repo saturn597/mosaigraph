@@ -25,6 +25,7 @@ import sys
 # TODO: Need to handle the case where a database has pixelwise info but not average rgb info and vice versa - though maybe also I can always do an everage when preprocessing (easy enough to 
 #   average the pixels we've already sampled in pixelwise preprocessing
 
+
 def get_matcher(pixelwise, unique, candidates, sample_size, width = 1000, height = 1000, sampler = None):
     # TODO: can width and height be removed as parameters? i.e., does passing the actual width/height of the images improve the result?
     if pixelwise:
@@ -57,6 +58,7 @@ class Matcher(object):
             self.candidates.pop(closest_index)  # consider keeping a separate record of what we've used instead
 
         return result
+
 
 class PixelwiseSampler(object):
     def __init__(self, sample_size, width = 1000, height = 1000):
@@ -93,6 +95,7 @@ class PixelwiseSampler(object):
             diff += abs(pixelA[0] - pixelB[0]) + abs(pixelA[1] - pixelB[1]) + abs(pixelA[2] - pixelB[2])
 
         return diff / (self.sample_size * 3)
+
 
 class PixelwiseMatcher(Matcher):
     def __init__(self, candidates, sample_size, unique, width = 1000, height = 1000, sampler = PixelwiseSampler(300)):
@@ -137,6 +140,7 @@ class RgbMatcher(Matcher):
         for candidate in self.candidates:
             yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
 
+
 def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
     # work on ability to use paths AND db
     # work on what happens if a db has rgb but not pixels and vice versa
@@ -165,6 +169,7 @@ def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
             candidate['pixels'] = json.loads(candidate['pixels'])
 
         if (rgb_needed and candidate.get('r') is None) or (pixels_needed and candidate.get('pixels') is None):
+            print('needed to process!')
             result = process_image(candidate['path'], rgb_needed, pixels_needed, sampler)
             if result:
                 candidate.update(result)
@@ -173,6 +178,159 @@ def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
 
     print("")
     return candidates
+
+def process_image(path, rgb_needed, pixels_needed, pixelwise_sampler = None):
+    try:
+        image = make_proportional(Image.open(path).convert(mode = "RGB"))
+    except (IOError, struct.error):
+        # IOError is usually because the file isn't an image file.
+        # TODO: look into what's causing struct.error
+        # TODO: check for struct.error elsewhere?
+        return None
+    
+    d = dict(path = path)
+    if pixels_needed:
+       d['pixels'] = pixelwise_sampler.sample_image(image)
+    
+    if rgb_needed:
+        # since pixels_needed already samples a bunch of pixels, maybe we could avoid redoing the sampling in cases where we also need an average
+        avg = get_color_avg(get_n_pixels(image, 300))
+        d.update(avg)
+
+    return d
+
+def get_color_avg(pixels):
+    # get the average color in a iterable of rgb pixels
+
+    r, g, b = 0, 0, 0
+    num_pixels = 0
+
+    for pix in pixels:
+        r += pix[0]
+        g += pix[1]
+        b += pix[2]
+        num_pixels += 1
+    
+    r = r / num_pixels
+    g = g / num_pixels
+    b = b / num_pixels
+
+    return {'r': int(r), 'g': int(g), 'b': int(b)}
+
+def get_n_pixels(img, n):
+    # return iterator through n randomly selected pixels in an image
+
+    width, height = img.size
+    for i in range(0, n):
+        x = random.randint(0, width - 1)  # is subtracting 1 correct?
+        y = random.randint(0, height - 1) 
+        yield img.getpixel((x, y))
+
+def get_best_edge_length(width, height, num_pieces):
+    # If we have a rectangle of width and height, and we want to divide it into num_pieces squares of equal size
+    # how long should each square's sides be to get as close as possible to num_pieces?
+ 
+    # get an initial estimate
+    # maybe would be simpler to just start with an estimate of 1, then iterate up
+    currentEstimate = int(math.sqrt(width * height / num_pieces))
+
+    # get the difference between the number of pieces this gives and the number we want
+    signedDiff = (width // currentEstimate) * (height // currentEstimate) - num_pieces
+    lastDiff = abs(signedDiff)
+
+    # if our estimate gets us the exact right number of pieces, we're done
+    if lastDiff == 0:
+        return currentEstimate
+
+    # too many pieces means we may want to increase the edge size, so a positive "step"
+    # too few means a negative step
+    step = signedDiff // lastDiff  # maybe set this in a way that makes the idea clearer
+
+    # now step through options to see if there's a better edge size
+    # if the difference between what we get and what we want increases, we've gone too far
+    while True:
+        currentEstimate += step
+        currentDiff = abs((width // currentEstimate) * (height // currentEstimate) - num_pieces)
+        if currentDiff > lastDiff:
+            return currentEstimate - step
+        lastDiff = currentDiff
+
+def make_proportional(img, ratio = 1):
+    # returns a piece of the center of an image with a given width/height ratio
+    # ratio defaults to 1
+
+    width, height = img.size
+    if width > height * ratio:
+        # if the width is too big, cut the sides off the image by enough to make it right
+        snipSize = int((width - height * ratio) / 2)
+        return img.crop((snipSize, 0, width - snipSize, height))
+    elif width < height * ratio:
+        # if the height is too big, cut the top/bottom off the image by enough to make it right
+        snipSize = int((height - width / ratio) / 2)
+        return img.crop((0, snipSize, width, height - snipSize))
+    else:
+        return img
+
+def store_image_data(image_files, db, sample_size = 1, pixelwise = False):
+    # process a given iterable of image_files, finding and storing the "average" color of the images in 
+    # the given database table, or samples of pixels
+    pixelwise_sampler = None
+    image_data = db['image']  # the db table that stores all of our saved data
+
+    rows = []  # list of rows to insert into the database
+
+    if pixelwise:
+        # sample_info gets loaded twice, already got loaded in main - TODO: stop that
+        pixelwise_sampler = PixelwiseSampler(sample_size)
+        sample_info = db['sample_info']  # db table storing basic information about how samples were obtained so we can stay consistent. TODO: also store "length/width"?
+        info = sample_info.find_one(id = 0)
+        if info:
+            pixelwise_sampler.pts_to_sample = json.loads(info['pixels'])
+        else:
+            sample_info.insert({ 'id': 0, 'pixels': json.dumps(pixelwise_sampler.pts_to_sample), 'sample_size': sample_size })
+
+    num_files = len(image_files)
+    print("{} files to process".format(num_files))
+
+    skipped = 0
+    for file_num, filename in enumerate(image_files):
+
+        path = os.path.abspath(unicode(filename, sys.getfilesystemencoding()))
+
+        # if we already have a row in the db for this path, find it
+        original_row = image_data.find_one(path = path)
+        if original_row:  
+            # if we've already gotten the data we need for this path, don't do any more calculations
+            if (not pixelwise and original_row.get('r') is not None) or (pixelwise and original_row.get('pixels') is not None):
+                skipped += 1
+                continue
+        print path
+        new_row = process_image(path, not pixelwise, pixelwise, pixelwise_sampler)
+
+        if not new_row:
+            print(path + " couldn't be processed")
+            continue
+
+        sys.stdout.write("processed file number {}\r".format(file_num + 1))
+        sys.stdout.flush()
+        
+        if 'pixels' in new_row:
+            new_row['pixels'] = json.dumps(new_row['pixels'])  # sqlite can't store lists - maybe switch backends? Or just go all out and json or pickle everything
+        
+        if original_row:
+            # if we already have a row in the db for this path, update it rather than adding a new row
+            original_row.update(new_row)
+            image_data.update(original_row, ['path'])
+        else:
+            # otherwise, add it to our lists of rows to insert
+            rows.append(new_row)
+    
+    print("")
+
+    if skipped:
+        print("Skipped {} files that were already in the database".format(skipped))
+
+    image_data.insert_many(rows)  # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
 
 def make_mosaigraph(img, num_pieces, matcher, edge_length = 100, randomize_order = False, unique = False):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
@@ -240,153 +398,6 @@ def make_mosaigraph(img, num_pieces, matcher, edge_length = 100, randomize_order
     print("")
     return result_image, log 
 
-def get_color_avg(pixels):
-    # get the average color in a iterable of rgb pixels
-
-    r, g, b = 0, 0, 0
-    num_pixels = 0
-
-    for pix in pixels:
-        r += pix[0]
-        g += pix[1]
-        b += pix[2]
-        num_pixels += 1
-    
-    r = r / num_pixels
-    g = g / num_pixels
-    b = b / num_pixels
-
-    return {'r': int(r), 'g': int(g), 'b': int(b)}
-
-def get_n_pixels(img, n):
-    # return iterator through n randomly selected pixels in an image
-
-    width, height = img.size
-    for i in range(0, n):
-        x = random.randint(0, width - 1)  # is subtracting 1 correct?
-        y = random.randint(0, height - 1) 
-        yield img.getpixel((x, y))
-
-def get_best_edge_length(width, height, num_pieces):
-    # If we have a rectangle of width and height, and we want to divide it into num_pieces squares of equal size
-    # how long should each square's sides be to get as close as possible to num_pieces?
- 
-    # get an initial estimate
-    # maybe would be simpler to just start with an estimate of 1, then iterate up
-    currentEstimate = int(math.sqrt(width * height / num_pieces))
-
-    # get the difference between the number of pieces this gives and the number we want
-    signedDiff = (width // currentEstimate) * (height // currentEstimate) - num_pieces
-    lastDiff = abs(signedDiff)
-
-    # if our estimate gets us the exact right number of pieces, we're done
-    if lastDiff == 0:
-        return currentEstimate
-
-    # too many pieces means we may want to increase the edge size, so a positive "step"
-    # too few means a negative step
-    step = signedDiff // lastDiff  # maybe set this in a way that makes the idea clearer
-
-    # now step through options to see if there's a better edge size
-    # if the difference between what we get and what we want increases, we've gone too far
-    while True:
-        currentEstimate += step
-        currentDiff = abs((width // currentEstimate) * (height // currentEstimate) - num_pieces)
-        if currentDiff > lastDiff:
-            return currentEstimate - step
-        lastDiff = currentDiff
-
-
-def make_proportional(img, ratio = 1):
-    # returns a piece of the center of an image with a given width/height ratio
-    # ratio defaults to 1
-
-    width, height = img.size
-    if width > height * ratio:
-        # if the width is too big, cut the sides off the image by enough to make it right
-        snipSize = int((width - height * ratio) / 2)
-        return img.crop((snipSize, 0, width - snipSize, height))
-    elif width < height * ratio:
-        # if the height is too big, cut the top/bottom off the image by enough to make it right
-        snipSize = int((height - width / ratio) / 2)
-        return img.crop((0, snipSize, width, height - snipSize))
-    else:
-        return img
-
-def store_image_data(image_files, db, sample_size = 1, pixelwise = False):
-    # process a given iterable of image_files, finding and storing the "average" color of the images in 
-    # the given database table
-    rows = []
-    image_data = db['image']
-
-    pixelwise_sampler = PixelwiseSampler(sample_size) if pixelwise else None
-
-    if pixelwise:
-        sample_info = db['sample_info']  # TODO: also store "length/width"?
-        info = sample_info.find_one(id = 0)
-        if info:
-            pixelwise_sampler.pts_to_sample = info['pixels']
-        else:
-            sample_info.insert({ 'id': 0, 'pixels': json.dumps(pixelwise_sampler.pts_to_sample), 'sample_size': sample_size })
-
-    num_files = len(image_files)
-    print("{} files to process".format(num_files))
-
-    for file_num, filename in enumerate(image_files):
-
-        path = os.path.abspath(unicode(filename, sys.getfilesystemencoding()))
-
-        original_row = image_data.find_one(path = path)
-        if original_row: # only do all the calculations if we haven't already checked this file
-            if original_row.get('r') is not None and not pixelwise:
-                continue
-            if original_row.get('pixels') is not None and pixelwise:
-                continue
-            update = True
-
-        new_row = process_image(path, not pixelwise, pixelwise, pixelwise_sampler)
-
-        if not new_row:
-            print(path + " couldn't be processed")
-            continue
-
-        sys.stdout.write("processed image number {}\r".format(file_num + 1))
-        sys.stdout.flush()
-        
-        if 'pixels' in new_row:
-            new_row['pixels'] = json.dumps(new_row['pixels'])  # sqlite can't store lists - maybe switch backends? Or just go all out and json or pickle everything
-        
-        if original_row:
-            new_row.update(original_row)
-            image_data.update(new_row, ['path'])
-        else:
-            rows.append(new_row)
-    
-    print("")
-    print("Inserting rows into db...")
-    image_data.insert_many(rows)  # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
-
-def process_image(path, rgb_needed, pixels_needed, pixelwise_sampler = None):
-    try:
-        image = make_proportional(Image.open(path).convert(mode = "RGB"))
-    except (IOError, struct.error):
-        # IOError is usually because the file isn't an image file.
-        # TODO: look into what's causing struct.error
-        # TODO: check for struct.error elsewhere?
-        return None
-    
-    d = dict(path = path)
-    if pixels_needed:
-       d['pixels'] = pixelwise_sampler.sample_image(image)
-    
-    if rgb_needed:
-        # since pixels_needed already samples a bunch of pixels, maybe we could avoid redoing the sampling in cases where we also need an average
-        avg = get_color_avg(get_n_pixels(image, 300))
-        d.update(avg)
-
-    return d
-
-
 def main(argv):
     # Process command line args. Depending on the result, either make a new photomosaic and display or save it (mosaic mode), or simply
     # preprocess images and save them to a database file (preprocessing mode)
@@ -439,8 +450,8 @@ def main(argv):
 
         sampler = PixelwiseSampler(300)
         if sample_info:
-            print("using pixels {}".format(sample_info['pixels']))
             sampler.pts_to_sample = json.loads(sample_info['pixels'])
+            print sampler.pts_to_sample
 
         candidates = list(collect_candidates(dbtable, args.sourceimages, not args.pixelwise, args.pixelwise, sampler))
         
@@ -454,7 +465,7 @@ def main(argv):
         i, dict = make_mosaigraph(input_image, args.n, matcher, edge_length = args.piecesize, randomize_order = args.randomize, unique = args.unique)
        
         print("New mosaic produced with average pixelwise difference {}".format(sampler.compare(input_image, i)))
-        #         #print("New mosaic produced with average pixelwise difference {}".format(compare_pixelwise(input_image, i, n = 300) / 1200))  TODO: REMOVE LINE
+
         if args.outfile:
             print("Saving mosaic as {}".format(args.outfile))
             i.save(args.outfile)
