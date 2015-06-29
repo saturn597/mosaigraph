@@ -142,9 +142,6 @@ class RgbMatcher(Matcher):
 
 
 def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
-    # work on ability to use paths AND db
-    # work on what happens if a db has rgb but not pixels and vice versa
-
     candidates = []
 
     if dbtable:
@@ -152,10 +149,8 @@ def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
 
     paths = paths or []
     for path in paths:
-        path = unicode(path, sys.getfilesystemencoding()) # TODO: Does this need a unicode conversion?
-        full_path = os.path.abspath(path)  
+        full_path = unicode(os.path.abspath(path), sys.getfilesystemencoding()) # TODO: Does this need a unicode conversion?
         new_candidate = dict(path = full_path)
-
         candidates.append(new_candidate)
    
     total_num = len(candidates)
@@ -271,23 +266,11 @@ def make_proportional(img, ratio = 1):
     else:
         return img
 
-def store_image_data(image_files, db, sample_size = 1, pixelwise = False):
+def preprocess(image_files, db, pixelwise_sampler, pixelwise):
     # process a given iterable of image_files, finding and storing the "average" color of the images in 
     # the given database table, or samples of pixels
-    pixelwise_sampler = None
-    image_data = db['image']  # the db table that stores all of our saved data
 
-    rows = []  # list of rows to insert into the database
-
-    if pixelwise:
-        # sample_info gets loaded twice, already got loaded in main - TODO: stop that
-        pixelwise_sampler = PixelwiseSampler(sample_size)
-        sample_info = db['sample_info']  # db table storing basic information about how samples were obtained so we can stay consistent. TODO: also store "length/width"?
-        info = sample_info.find_one(id = 0)
-        if info:
-            pixelwise_sampler.pts_to_sample = json.loads(info['pixels'])
-        else:
-            sample_info.insert({ 'id': 0, 'pixels': json.dumps(pixelwise_sampler.pts_to_sample), 'sample_size': sample_size })
+    rows_to_insert = [] 
 
     num_files = len(image_files)
     print("{} files to process".format(num_files))
@@ -298,13 +281,13 @@ def store_image_data(image_files, db, sample_size = 1, pixelwise = False):
         path = os.path.abspath(unicode(filename, sys.getfilesystemencoding()))
 
         # if we already have a row in the db for this path, find it
-        original_row = image_data.find_one(path = path)
+        original_row = db['image_data'].find_one(path = path)
         if original_row:  
             # if we've already gotten the data we need for this path, don't do any more calculations
             if (not pixelwise and original_row.get('r') is not None) or (pixelwise and original_row.get('pixels') is not None):
                 skipped += 1
                 continue
-        print path
+
         new_row = process_image(path, not pixelwise, pixelwise, pixelwise_sampler)
 
         if not new_row:
@@ -320,34 +303,30 @@ def store_image_data(image_files, db, sample_size = 1, pixelwise = False):
         if original_row:
             # if we already have a row in the db for this path, update it rather than adding a new row
             original_row.update(new_row)
-            image_data.update(original_row, ['path'])
+            db['image_data'].update(original_row, ['path'])
         else:
             # otherwise, add it to our lists of rows to insert
-            rows.append(new_row)
+            rows_to_insert.append(new_row)
     
     print("")
 
     if skipped:
         print("Skipped {} files that were already in the database".format(skipped))
 
-    image_data.insert_many(rows)  # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
+    db['image_data'].insert_many(rows_to_insert)  # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
 
-def make_mosaigraph(img, num_pieces, matcher, edge_length = 100, randomize_order = False, unique = False):
+def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, unique):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
-    # TODO: fix arguments list - some of these descriptions could go elsewhere
     # img: the base image
     # num_pieces: the number of square pieces we want the mosaic to have
     #   Actual number of pieces may differ. We are restricted by the fact that the pieces are square-shaped. Also, the lengths of the edges, as well as the number of
     #   divisions we make along the x and y axes, must be integers.
+    # matcher: a matcher object that knows how to find images that fit well in a given section of the mosaic
     # edge_length: the pieces of the mosaic will have edges this long
-    # unique: if True, candidate images won't be reused within a given mosaic
     # randomize_order: randomize the order in which we add pieces to the mosaic
-    # pixelwise: determines the method for matching candidates to the specific section of the base image that they are intended to stand for
-    #   If True, two same-sized images match if the color of pixel (x, y) in image A is likely to be similar to that of pixel (x, y) in image B, for any given (x, y).
-    #   If False, two images match if the overall color of one is close to the overall color of the other, based on averaging a sample drawn from all pixels.
-    #   Pixelwise matches yield better results but are slow.
-    
+    # unique: if True, candidate images won't be reused within a given mosaic
+
     # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
 
     log = []  # record of which images we've used where in the mosaic so we can report back to our caller
@@ -421,48 +400,58 @@ def main(argv):
 
     # options usable in both mosaic mode and preprocessing mode
     arg_parser.add_argument('-d', '--dbfile', help = 'in mosaic mode, construct mosaic using images pointed to by this database file; in preprocessing mode, save the data to this file')
-    arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'compare images pixel by pixel instead of just average color')
+    arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'in mosaic mode, a pixel-by-pixel comparison of candidate images with the base image, instead of just looking at overall average rgb color; in preprocessing mode, store samples of multiple pixels in each candidate image, useful for making pixelwise mosaics; slower, but better results than the default averaging mode')
+   
+    # in mosaic mode, compare the color of each pixel sampled in the starting image to the corresponding pixel in each candidate image, and use candidate images that minimize the total difference among all sampled pixels, instead of just comparing the average color of one image with the average color of another; in preprocessing mode, store samples of pixels; slower, but better results ')
 
-    args = arg_parser.parse_args()
+    # pixelwise determines the method for matching candidates to the specific section of the base image that they are intended to stand for
+    #   If True, two same-sized images match if the color of pixel (x, y) in image A is likely to be similar to that of pixel (x, y) in image B, for any given (x, y).
+    #   If False, two images match if the overall color of one is close to the overall color of the other, based on averaging a sample drawn from all pixels.
+    #   Pixelwise matches yield better results but are slow.
     
-    dbtable = None
-    sample_info = None
+    args = arg_parser.parse_args()
+  
+    sample_size = 300
+
+    loaded_sample_info = None
+
+    sampler = PixelwiseSampler(sample_size)
 
     if args.dbfile:
-        dbname = 'sqlite:///' + args.dbfile
+        db = dataset.connect('sqlite:///' + args.dbfile)
+        loaded_sample_info = db['sample_info'].find_one(id = 0)
 
-        db = dataset.connect(dbname)
-        dbtable = db['image']
-        sample_table = db['sample_info']
-        sample_info = sample_table.find_one(id = 0)
+    if loaded_sample_info:
+        # if we'd stored a set of points to sample in the db, use those for our sampler 
+        sampler.pts_to_sample = json.loads(loaded_sample_info['pixels'])
+
+        if loaded_sample_info['sample_size'] != sample_size:
+            print('Warning! Not using specified sample size; using the one from the database instead.')
+            sample_size = loaded_sample_info['sample_size']
 
     if args.preprocess:
-        store_image_data(args.preprocess, db, sample_size = 300, pixelwise = args.pixelwise)
+        # if we hadn't stored a sample size and set of points to sample in the db, write one now
+        if not loaded_sample_info:
+            db['sample_info'].insert({ 'id': 0, 'pixels': json.dumps(sampler.pts_to_sample), 'sample_size': sample_size })
+        preprocess(args.preprocess, db, sampler, args.pixelwise)
 
     elif args.filename:
-
         if args.outfile and os.path.exists(args.outfile):
-            print
             if not (raw_input("Overwrite existing file {}? (y/n) ".format(args.outfile)) in ["yes", "y"]):  # TODO: raw_input won't work in python3
                 sys.exit(0) 
         
         print("Making mosaic out of {}...".format(args.filename))
 
-        sampler = PixelwiseSampler(300)
-        if sample_info:
-            sampler.pts_to_sample = json.loads(sample_info['pixels'])
-            print sampler.pts_to_sample
-
-        candidates = list(collect_candidates(dbtable, args.sourceimages, not args.pixelwise, args.pixelwise, sampler))
+        candidates = collect_candidates(db['image_data'], args.sourceimages, not args.pixelwise, args.pixelwise, sampler)
         
         print("Using pool of {} candidate images".format(len(candidates)))
         
         input_image = Image.open(args.filename)
 
         # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
-        matcher = get_matcher(args.pixelwise, args.unique, candidates, 300, sampler = sampler)
+        matcher = get_matcher(args.pixelwise, args.unique, candidates, sample_size, sampler = sampler)
 
-        i, dict = make_mosaigraph(input_image, args.n, matcher, edge_length = args.piecesize, randomize_order = args.randomize, unique = args.unique)
+        i, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
        
         print("New mosaic produced with average pixelwise difference {}".format(sampler.compare(input_image, i)))
 
