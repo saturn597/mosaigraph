@@ -1,3 +1,5 @@
+#!/usr/bin/python
+
 from __future__ import division
 
 from PIL import Image
@@ -19,20 +21,71 @@ import sys
 # TODO: Make this give appropriate errors in case the user requires uniqueness but doesn't have a big enough pool of images
 # TODO: add alternative means of comparing images (like something from scikit-img)
 # TODO: add option for changing sample sizes - include option for sampling ALL pixels
-# TODO: Test in python 3
+# TODO: Work on python 3 compatibility
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
 # TODO: Need to handle the case where a database has pixelwise info but not average rgb info and vice versa - though maybe also I can always do an everage when preprocessing (easy enough to 
 #   average the pixels we've already sampled in pixelwise preprocessing
+# TODO: Maybe make it so preprocessing ALWAYS stores a full sample of pixels.
 
 
-def get_matcher(pixelwise, unique, candidates, sample_size, sampler, width = 1000, height = 1000):
+def get_matcher(pixelwise, unique, candidates, sampler, width = 1000, height = 1000):
     # TODO: can width and height be removed as parameters? i.e., does passing the actual width/height of the images improve the result?
     if pixelwise:
         return PixelwiseMatcher(candidates, unique, sampler, width, height)
     elif unique:
-        return RgbMatcher(candidates, sample_size, unique)
+        return RgbMatcher(candidates, unique, sampler)
     else:
-        return KDTreeRgbMatcher(candidates, sample_size)
+        return KDTreeRgbMatcher(candidates, sampler)
+
+def get_sampler(pixelwise, sample_size, pts_to_sample, width = 1000, height = 1000):
+    if pixelwise:
+        return PixelwiseSampler(sample_size, pts_to_sample, width, height)
+    else:
+        return AverageSampler(sample_size)
+
+
+class AverageSampler(object):
+    def __init__(self, sample_size):
+        self.sample_size = sample_size
+
+    def sample_image(self, image):
+        image = make_proportional(image).convert(mode = 'RGB')
+        return get_color_avg(get_n_pixels(image, self.sample_size))
+
+    def compare(self, imageA, imageB):
+        avgA = self.sample_image(imageA)
+        avgB = self.sample_image(imageB)
+        return math.sqrt((avgA['r'] - avgB['r'])**2 + (avgA['g'] - avgB['g'])**2 + (avgA['b'] - avgB['b'])**2)
+
+
+class PixelwiseSampler(object):
+    def __init__(self, sample_size, pts_to_sample, width = 1000, height = 1000):
+        # TODO: potentially remove width and height
+        self.sample_size = sample_size
+        self.width = width
+        self.height = height
+        self.pts_to_sample = pts_to_sample or [(random.randint(0, self.width - 1), random.randint(0, self.height - 1)) for i in range(sample_size)]  # maybe use randrange
+
+    def sample_image(self, image):
+        image = make_proportional(image, self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+        return [image.getpixel((x, y)) for x, y in self.pts_to_sample]
+
+    def compare(self, imageA, imageB):
+        # TODO: this is kind of redundant with get_distances - fix
+        
+        pixelsA = self.sample_image(imageA)
+        pixelsB = self.sample_image(imageB)
+        
+        return self.pixel_dist(pixelsA, pixelsB)
+
+    def pixel_dist(self, pixelsA, pixelsB):
+        # consider taking this out of class if needed
+        diff = 0
+
+        for pixelA, pixelB in zip(pixelsA, pixelsB):
+            diff += abs(pixelA[0] - pixelB[0]) + abs(pixelA[1] - pixelB[1]) + abs(pixelA[2] - pixelB[2])
+
+        return diff / (self.sample_size * 3)
 
 
 class Matcher(object):
@@ -59,46 +112,8 @@ class Matcher(object):
         return result
 
 
-class PixelwiseSampler(object):
-    def __init__(self, sample_size, pts_to_sample, width = 1000, height = 1000):
-        # TODO: potentially remove width and height
-        self.sample_size = sample_size
-        self.width = width
-        self.height = height
-        self.pts_to_sample = pts_to_sample or [(random.randint(0, self.width - 1), random.randint(0, self.height - 1)) for i in range(sample_size)]  # maybe use randrange
-
-    def sample_path(self, path):
-        # Returns None when image load fails
-        try: 
-            return self.sample_image(Image.open(path))
-        except IOError:  # TODO: do exception checking wherever we have an Image.open
-            return None
-
-    def sample_image(self, image):
-        image = make_proportional(image, self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
-        return [image.getpixel((x, y)) for x, y in self.pts_to_sample]
-
-    def compare(self, imageA, imageB):
-        # TODO: this is kind of redundant with get_distances - fix
-        
-        pixelsA = self.sample_image(imageA)
-        pixelsB = self.sample_image(imageB)
-        
-        return self.pixel_dist(pixelsA, pixelsB)
-
-    def pixel_dist(self, pixelsA, pixelsB):
-        # consider taking this out of class if needed
-        diff = 0
-
-        for pixelA, pixelB in zip(pixelsA, pixelsB):
-            diff += abs(pixelA[0] - pixelB[0]) + abs(pixelA[1] - pixelB[1]) + abs(pixelA[2] - pixelB[2])
-
-        return diff / (self.sample_size * 3)
-
-
 class PixelwiseMatcher(Matcher):
-    def __init__(self, candidates, unique, sampler, width = 1000, height = 1000):
-        # TODO: Can omit width/height as parameters if arbitrary resizing works just as well (in TODO below)
+    def __init__(self, candidates, unique, sampler):
         self.candidates = list(candidates)  # make our own copy since we may mutate the list
 
         self.sampler = sampler
@@ -114,13 +129,13 @@ class PixelwiseMatcher(Matcher):
 
 
 class KDTreeRgbMatcher(Matcher):
-    def __init__(self, candidates, sample_size):
+    def __init__(self, candidates, sampler):
         self.candidates = list(candidates)
-        self.sample_size = sample_size
+        self.sampler = sampler
         self.kdtree = spatial.KDTree([(candidate['r'], candidate['g'], candidate['b']) for candidate in candidates])
 
     def get_match(self, image):
-        rgb = get_color_avg(get_n_pixels(image, self.sample_size))
+        rgb = self.sampler.sample_image(image)
         index = self.kdtree.query((rgb['r'], rgb['g'], rgb['b']))[1]
         return self.candidates[index]
 
@@ -129,13 +144,13 @@ class RgbMatcher(Matcher):
     # k-d trees are an efficient data structure for nearest neighbor search. However, using them makes it difficult to exclude 
     # items from the search that we've already used. (At least given scipy's implementation of k-d trees). So 
     # for now only using them when we don't mind reusing images - so we need a non-KD-tree Rgb Matcher.
-    def __init__(self, candidates, sample_size, unique = False):
+    def __init__(self, candidates, unique, sampler):
         self.candidates = list(candidates)
         self.sample_size = sample_size  # this only matters to the sample we take of images we're trying to find a match for; the candidates have already been sampled
         self.unique = unique
 
     def get_distances(self, image):
-        rgb = get_color_avg(get_n_pixels(image, self.sample_size))
+        rgb = self.sampler.sample_image(image)
         for candidate in self.candidates:
             yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
 
@@ -151,12 +166,19 @@ def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
         full_path = unicode(os.path.abspath(path), sys.getfilesystemencoding()) # TODO: Does this need a unicode conversion?
         new_candidate = dict(path = full_path)
         candidates.append(new_candidate)
-   
+
     total_num = len(candidates)
     print('{} candidates to process'.format(total_num))
 
+    unique_candidates = []  # we'll build a new list with duplicates eliminated so we don't do extra processing
+    checked_files = set()
+
     # TODO: possible to do all of the following while building the candidates list, to avoid having to go through the list 2x?
     for candidate_num, candidate in enumerate(candidates):
+        if candidate['path'] in checked_files:
+            continue
+        
+        checked_files.add(candidate['path'])
         sys.stdout.write('\rProcessing candidate {} out of {}'.format(candidate_num + 1, total_num))
         sys.stdout.flush()
 
@@ -171,8 +193,10 @@ def collect_candidates(dbtable, paths, rgb_needed, pixels_needed, sampler):
             else:
                 continue
 
+        unique_candidates.append(candidate)
+
     print('')
-    return candidates
+    return unique_candidates
 
 def process_image(path, rgb_needed, pixels_needed, pixelwise_sampler):
     try:
@@ -386,6 +410,7 @@ def main():
 
     loaded_sample_info = None
     pts_to_sample = None
+    db = None
 
     if args.dbfile:
         db = dataset.connect('sqlite:///' + args.dbfile)
@@ -394,15 +419,18 @@ def main():
     if loaded_sample_info:
         if args.pixelwise and loaded_sample_info['sample_size'] != sample_size:
             # if we're going to use pixelwise data from the db, we'll need to sample the same number of pixels for consistency
-            print('Warning! Not using specified sample size; using the one from the database instead.')
+            print('Warning! Not using specified sample size; using the one from the preprocessing file instead.')
             sample_size = loaded_sample_info['sample_size']
 
         # if we stored a set of points to sample in the db, use those for our sampler 
         pts_to_sample = json.loads(loaded_sample_info['pixels'])
 
-    sampler = PixelwiseSampler(sample_size, pts_to_sample)
+    sampler = get_sampler(args.pixelwise, sample_size, pts_to_sample)
 
     if args.preprocess:
+        if not db:
+            print('Must specify a filename for saving the preprocessing data')
+            sys.exit(0)
         # if we hadn't stored a sample size and set of points to sample in the db, write one now
         if not loaded_sample_info:
             db['sample_info'].insert({ 'id': 0, 'pixels': json.dumps(sampler.pts_to_sample), 'sample_size': sample_size })
@@ -420,18 +448,19 @@ def main():
 
         print('Making mosaic out of {}...'.format(args.filename))
 
-        candidates = collect_candidates(db['image_data'], args.sourceimages, not args.pixelwise, args.pixelwise, sampler)
+        candidates = collect_candidates(db['image_data'], args.imagelist, not args.pixelwise, args.pixelwise, sampler)
         
         print('Using pool of {} candidate images'.format(len(candidates)))
         
         input_image = Image.open(args.filename)
 
         # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
-        matcher = get_matcher(args.pixelwise, args.unique, candidates, sample_size, sampler)
+        matcher = get_matcher(args.pixelwise, args.unique, candidates, sampler)
 
         mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
-       
-        print('New mosaic produced with average pixelwise difference {}'.format(sampler.compare(input_image, mosaic)))
+      
+        # maybe this should always be pixelwise
+        print('New mosaic produced with average difference {}'.format(sampler.compare(input_image, mosaic)))
 
         if args.outfile:
             print('Saving mosaic as {}'.format(args.outfile))
@@ -448,16 +477,17 @@ def main():
     else:
         print('Nothing to do!\n')
         arg_parser.print_help()
+        sys.exit(0)
 
 def get_arg_parser():
     arg_parser = argparse.ArgumentParser()
  
     # options/argument for mosaic mode only
+    arg_parser.add_argument('-i', '--imagelist', metavar = 'IMAGES', nargs = '+', help = 'draw from this set of images in constructing mosaic')
     arg_parser.add_argument('-j', '--json', metavar = 'FILE', help = 'produce a json file FILE that shows which images were used where in the mosaic')
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
     arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; if not specified, will attempt to display the image in a default image viewer, but won\'t save it; format of output file is determined by extension (so .jpg for jpg, .png for png)')
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
-    arg_parser.add_argument('-s', '--sourceimages', metavar = 'IMAGE', nargs = '+', help = 'draw from this set of images in constructing mosaic')
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
     arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
     arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'each square piece of the resulting image will have edges this many pixels long; increase this value if the individual images are too pixelated and hard to make out, even when zoomed')
@@ -470,14 +500,7 @@ def get_arg_parser():
     # options usable in both mosaic mode and preprocessing mode
     arg_parser.add_argument('-d', '--dbfile', help = 'in mosaic mode, construct mosaic using images pointed to by this database file; in preprocessing mode, save the data to this file')
     arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'in mosaic mode, a pixel-by-pixel comparison of candidate images with the base image, instead of just looking at overall average rgb color; in preprocessing mode, store samples of multiple pixels in each candidate image, useful for making pixelwise mosaics; slower, but better results than the default averaging mode')
-   
-    # in mosaic mode, compare the color of each pixel sampled in the starting image to the corresponding pixel in each candidate image, and use candidate images that minimize the total difference among all sampled pixels, instead of just comparing the average color of one image with the average color of another; in preprocessing mode, store samples of pixels; slower, but better results ')
-
-    # pixelwise determines the method for matching candidates to the specific section of the base image that they are intended to stand for
-    #   If True, two same-sized images match if the color of pixel (x, y) in image A is likely to be similar to that of pixel (x, y) in image B, for any given (x, y).
-    #   If False, two images match if the overall color of one is close to the overall color of the other, based on averaging a sample drawn from all pixels.
-    #   Pixelwise matches yield better results but are slow.
-    
+ 
     return arg_parser
 
 if __name__ == '__main__':
