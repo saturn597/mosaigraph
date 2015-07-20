@@ -22,9 +22,6 @@ import sys
 # TODO: add option for changing sample sizes - include option for sampling ALL pixels
 # TODO: Work on python 3 compatibility
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
-# TODO: Need to handle the case where a database has pixelwise info but not average rgb info and vice versa - though maybe also I can always do an everage when preprocessing (easy enough to 
-#   average the pixels we've already sampled in pixelwise preprocessing
-# TODO: Maybe make it so preprocessing ALWAYS stores a full sample of pixels.
 # TODO: graceful degradation if dependencies are not installed (at least dataset and scipy; PIL is probably hard to avoid)
 
 
@@ -36,7 +33,7 @@ def get_matcher(pixelwise, unique, candidates, sampler, width = 1000, height = 1
         try:
             return KDTreeRgbMatcher(candidates, sampler)
         except ImportError:
-            print("No scipy.spatial found, will use a linear search through the candidates...")
+            print('scipy.spatial not found, will use a linear search through the candidates...')
 
     return RgbMatcher(candidates, unique, sampler)
 
@@ -143,7 +140,9 @@ class KDTreeRgbMatcher(Matcher):
 class RgbMatcher(Matcher):
     # k-d trees are an efficient data structure for nearest neighbor search. However, using them makes it difficult to exclude 
     # items from the search that we've already used. (At least given scipy's implementation of k-d trees). So 
-    # for now only using them when we don't mind reusing images - so we need a non-KD-tree Rgb Matcher.
+    # for now only using them when we don't mind reusing images. Also, not everyone has scipy installed. 
+    # So, we need a non-KD-tree Rgb Matcher.
+
     def __init__(self, candidates, unique, sampler):
         self.candidates = list(candidates)
         #self.sample_size = sample_size  # this only matters to the sample we take of images we're trying to find a match for; the candidates have already been sampled
@@ -416,6 +415,11 @@ def main():
     pixelwise = args.pixelwise or args.preprocess
 
     if args.dbfile:
+        try:
+            import dataset  # TODO: maybe just get rid of dataset, using json would be just as good and wouldn't add this dependency
+        except ImportError:
+            print('ERROR: dataset not found, so can\'t save a preprocessing file; install dataset with "pip install dataset" if you would like to proceed')
+            sys.exit(1)
         db = dataset.connect('sqlite:///' + args.dbfile)
         loaded_sample_info = db['sample_info'].find_one(id = 0)
 
@@ -438,7 +442,7 @@ def main():
     if args.preprocess:
         if not db:
             print('Must specify a filename for saving the preprocessing data. Use the -d argument.')
-            sys.exit(0)
+            sys.exit(1)
         # if we hadn't stored a sample size and set of points to sample in the db, write one now
         if not loaded_sample_info:
             db['sample_info'].insert({ 'id': 0, 'pts_sampled': json.dumps(sampler.pts_to_sample), 'sample_size': sample_size })
