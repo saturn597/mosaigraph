@@ -5,7 +5,6 @@ from __future__ import division
 from PIL import Image
 
 import argparse
-#import dataset
 import getopt
 import json
 import math
@@ -17,13 +16,14 @@ import sys
 
 # TODO: work on adding more sensible output
 # TODO: for "unique" maybe move in this direction - find best overall fit rather than just going through each piece in order (which causes the image to get worse left to right) 
-# TODO: Make this give appropriate errors in case the user requires uniqueness but doesn't have a big enough pool of images
 # TODO: add alternative means of comparing images (like something from scikit-img)
 # TODO: add option for changing sample sizes - include option for sampling ALL pixels
 # TODO: Work on python 3 compatibility
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
-# TODO: graceful degradation if dependencies are not installed (at least dataset and scipy; PIL is probably hard to avoid)
+# TODO: get rid of dataset
 
+class TooFewCandidatesException(Exception):
+    pass
 
 def get_matcher(pixelwise, unique, candidates, sampler, width = 1000, height = 1000):
     # TODO: can width and height be removed as parameters? i.e., does passing the actual width/height of the images improve the result?
@@ -364,6 +364,9 @@ def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, uniq
     actual_num_pieces = numX * numY
     print('Dividing mosaic into {} pieces'.format(actual_num_pieces))
 
+    if unique and actual_num_pieces > len(matcher.candidates):
+        raise TooFewCandidatesException
+
     piece_ids = [(x, y) for x in range(0, numX) for y in range(0, numY)]
 
     # On "unique" mode, we can run low on good images to use. Randomizing the order in which we add each piece to the mosaic
@@ -418,7 +421,7 @@ def main():
         try:
             import dataset  # TODO: maybe just get rid of dataset, using json would be just as good and wouldn't add this dependency
         except ImportError:
-            print('ERROR: dataset not found, so can\'t save a preprocessing file; install dataset with "pip install dataset" if you would like to proceed')
+            print('ERROR: dataset required to save a preprocessing file; you can install dataset with "pip install dataset"')
             sys.exit(1)
         db = dataset.connect('sqlite:///' + args.dbfile)
         loaded_sample_info = db['sample_info'].find_one(id = 0)
@@ -465,7 +468,7 @@ def main():
             image_data = db['image_data']
 
         candidates = collect_candidates(image_data, args.imagelist, sampler)
-        
+
         print('Using pool of {} candidate images'.format(len(candidates)))
         
         input_image = Image.open(args.filename)
@@ -473,7 +476,11 @@ def main():
         # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
         matcher = get_matcher(pixelwise, args.unique, candidates, sampler)
 
-        mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
+        try:
+            mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
+        except TooFewCandidatesException:
+            print('Not enough candidate images to use them uniquely! Provide more or make a mosaic with fewer or non-unique pieces.')
+            sys.exit(1) 
       
         # maybe this should always be pixelwise
         print('New mosaic produced with average difference {}'.format(sampler.compare(input_image, mosaic)))
