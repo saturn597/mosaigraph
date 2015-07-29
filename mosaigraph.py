@@ -25,6 +25,9 @@ import sys
 class TooFewCandidatesException(Exception):
     pass
 
+class ArgumentException(Exception):
+    pass
+
 def get_matcher(pixelwise, unique, candidates, sampler, width = 1000, height = 1000):
     # TODO: can width and height be removed as parameters? i.e., does passing the actual width/height of the images improve the result?
     if pixelwise:
@@ -155,39 +158,31 @@ class RgbMatcher(Matcher):
             yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
 
 
-def collect_candidates(dbtable, paths, sampler):
-    candidates = []
-
-    if dbtable:
-        candidates = list(dbtable.all())  # TODO: do I need the list conversion here?
+def collect_candidates(db_data, paths, sampler):
+    candidates = db_data or {}
 
     paths = paths or []
     for path in paths:
         full_path = unicode(os.path.abspath(path), sys.getfilesystemencoding()) # TODO: Does this need a unicode conversion?
-        new_candidate = dict(path = full_path)
-        candidates.append(new_candidate)
+        candidates.setdefault(full_path, dict(path = full_path))
 
     total_num = len(candidates)
     print('{} candidates to process'.format(total_num))
-
-    unique_candidates = []  # we'll build a new list with duplicates eliminated so we don't do extra processing
-    checked_files = set()
-
+    
+    unique_candidates = []  # TODO: should this be a list or a dict?
     # TODO: possible to do all of the following while building the candidates list, to avoid having to go through the list 2x?
-    for candidate_num, candidate in enumerate(candidates):
-        if candidate['path'] in checked_files:
-            continue
-        
-        checked_files.add(candidate['path'])
+    for candidate_num, key in enumerate(candidates):
+        candidate = candidates[key] 
         sys.stdout.write('\rProcessing candidate {} out of {}'.format(candidate_num + 1, total_num))
         sys.stdout.flush()
 
         if candidate.get('pixels') is not None:
-            candidate['pixels'] = json.loads(candidate['pixels'])
+            print candidate['pixels']
+            candidate['pixels'] = json.loads(candidate['pixels'])  # TODO: take out this extra json.loads
 
         if candidate.get('pixels') is None:
             print('needed to process!')  # TODO: take out this line
-            result = process_image(candidate['path'], sampler)
+            result = process_image(candidate['path'], sampler)  # TODO: Handle case where this doesn't work
             if result:
                 candidate.update(result)
             else:
@@ -289,9 +284,9 @@ def make_proportional(img, ratio = 1):
     else:
         return img
 
-def preprocess(image_files, db, sampler):
+def preprocess(image_files, dbfile, db_data, sampler):
     # process a given iterable of image_files, finding and storing the "average" color of the images in 
-    # the given database table, or samples of pixels
+    # the given database table, and samples of pixels
 
     rows_to_insert = [] 
 
@@ -304,12 +299,11 @@ def preprocess(image_files, db, sampler):
         path = os.path.abspath(unicode(filename, sys.getfilesystemencoding()))
 
         # if we already have a row in the db for this path, find it
-        original_row = db['image_data'].find_one(path = path)
-        if original_row:  
+        original_row = db_data['image_data'].get(path)
+        if original_row:
             # if we've already gotten the data we need for this path, don't do any more calculations
-            if original_row.get('pixels') is not None:
-                skipped += 1
-                continue
+            skipped += 1
+            continue
 
         new_row = process_image(path, sampler)
 
@@ -317,26 +311,18 @@ def preprocess(image_files, db, sampler):
             print('{} couldn\'t be processed'.format(path))
             continue
 
+        new_row['pixels'] = json.dumps(new_row['pixels'])
+
+        db_data['image_data'][path] = new_row
+
         sys.stdout.write('processed file number {}\r'.format(file_num + 1))
         sys.stdout.flush()
-        
-        if 'pixels' in new_row:
-            new_row['pixels'] = json.dumps(new_row['pixels'])  # sqlite can't store lists - maybe switch backends? Or just go all out and json or pickle everything instead of using dataset
-        
-        if original_row:
-            # if we already have a row in the db for this path, update it rather than adding a new row
-            original_row.update(new_row)
-            db['image_data'].update(original_row, ['path'])
-        else:
-            # otherwise, add it to our lists of rows to insert
-            rows_to_insert.append(new_row)
+
     
     print('')
 
-    if skipped:
-        print('Skipped {} files that were already in the database'.format(skipped))
-
-    db['image_data'].insert_many(rows_to_insert)  # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
+    with open(dbfile, 'w') as f:
+        json.dump(db_data, f) # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
 
 def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, unique):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
@@ -403,15 +389,13 @@ def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, uniq
     print('')
     return result_image, log 
 
-def main():
+def main(args):
     # Process command line args. Depending on the result, either make a new photomosaic and display or save it (mosaic mode), or simply
     # preprocess images and save them to a database file (preprocessing mode)
-    arg_parser = get_arg_parser()
-    args = arg_parser.parse_args()
 
     sample_size = 300  # TODO: make it so this can be set by the user
 
-    db = None
+    db_data = None
     loaded_sample_info = None
     pts_to_sample = None
 
@@ -419,12 +403,14 @@ def main():
 
     if args.dbfile:
         try:
-            import dataset  # TODO: maybe just get rid of dataset, using json would be just as good and wouldn't add this dependency
-        except ImportError:
-            print('ERROR: dataset required to save a preprocessing file; you can install dataset with "pip install dataset"')
-            sys.exit(1)
-        db = dataset.connect('sqlite:///' + args.dbfile)
-        loaded_sample_info = db['sample_info'].find_one(id = 0)
+            with open(args.dbfile, 'r') as f:
+                db_data = json.load(f)
+            loaded_sample_info = db_data.get('sample_info')
+        except IOError as e:
+            if args.preprocess:
+                db_data = { 'sample_info': {}, 'image_data': {} }
+            else:
+                raise e
 
     if loaded_sample_info and pixelwise:
         # we need to sample the same spots in each image for pixelwise comparisons to be valid
@@ -443,13 +429,12 @@ def main():
         sampler.pts_to_sample = pts_to_sample
 
     if args.preprocess:
-        if not db:
-            print('Must specify a filename for saving the preprocessing data. Use the -d argument.')
-            sys.exit(1)
+        if db_data is None:
+            raise ArgumentException('Must specify a filename for saving the preprocessing data. Use the -d argument.')
         # if we hadn't stored a sample size and set of points to sample in the db, write one now
         if not loaded_sample_info:
-            db['sample_info'].insert({ 'id': 0, 'pts_sampled': json.dumps(sampler.pts_to_sample), 'sample_size': sample_size })
-        preprocess(args.preprocess, db, sampler, pixelwise)
+            db_data['sample_info'] = { 'pts_sampled': json.dumps(sampler.pts_to_sample), 'sample_size': sample_size }
+        preprocess(args.preprocess, args.dbfile, db_data, sampler)
 
     elif args.filename:
         if args.outfile and os.path.exists(args.outfile):
@@ -464,8 +449,8 @@ def main():
         print('Making mosaic out of {}...'.format(args.filename))
        
         image_data = None
-        if db:
-            image_data = db['image_data']
+        if db_data:
+            image_data = db_data['image_data']
 
         candidates = collect_candidates(image_data, args.imagelist, sampler)
 
@@ -476,11 +461,7 @@ def main():
         # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
         matcher = get_matcher(pixelwise, args.unique, candidates, sampler)
 
-        try:
-            mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
-        except TooFewCandidatesException:
-            print('Not enough candidate images to use them uniquely! Provide more or make a mosaic with fewer or non-unique pieces.')
-            sys.exit(1) 
+        mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
       
         # maybe this should always be pixelwise
         print('New mosaic produced with average difference {}'.format(sampler.compare(input_image, mosaic)))
@@ -498,9 +479,7 @@ def main():
                 json.dump(dict, f)
 
     else:
-        print('Nothing to do!\n')
-        arg_parser.print_help()
-        sys.exit(0)
+        raise ArgumentException('Nothing to do!')
 
 def get_arg_parser():
     arg_parser = argparse.ArgumentParser()
@@ -527,6 +506,18 @@ def get_arg_parser():
     return arg_parser
 
 if __name__ == '__main__':
-    main()
+    dbfile = None
+    arg_parser = get_arg_parser()
+    args = arg_parser.parse_args()
+
+    try:
+        main(args)
+    except IOError as e:
+        print('Failed to access file: {}'.format(e))
+    except ArgumentException as e:
+        print(str(e))
+        arg_parser.print_help()
+    except TooFewCandidatesException:
+        print('\nERROR: Not enough candidate images to use them uniquely! Provide more or make a mosaic with fewer or non-unique pieces.\n')
 
 
