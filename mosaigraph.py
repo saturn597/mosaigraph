@@ -17,7 +17,6 @@ import sys
 # TODO: work on adding more sensible output
 # TODO: for "unique" maybe move in this direction - find best overall fit rather than just going through each piece in order (which causes the image to get worse left to right) 
 # TODO: add alternative means of comparing images (like something from scikit-img)
-# TODO: add option for changing sample sizes - include option for sampling ALL pixels
 # TODO: Keep testing python 3 compatibility
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
 
@@ -427,7 +426,7 @@ def main(args):
     # Process command line args. Depending on the result, either make a new photomosaic and display or save it (mosaic mode), or simply
     # preprocess images and save them to a database file (preprocessing mode)
 
-    sample_size = 300  # TODO: make it so this can be set by the user
+    sample_size = args.samplesize
 
     db_data = {}
     loaded_sampling_info = None  # information pulled from a preprocessing file about how the preprocessed images were sampled 
@@ -449,7 +448,6 @@ def main(args):
 
     if loaded_sampling_info and pixelwise:
         if loaded_sampling_info['sample_size'] != sample_size:
-            # TODO: make this warning meaningful by allowing user to set sample size
             print('Warning! Not using specified sample size; using the one from the preprocessing file instead.')
             sample_size = loaded_sampling_info['sample_size']
 
@@ -521,6 +519,7 @@ def get_arg_parser():
     arg_parser.add_argument('baseimage', nargs = '?', help = 'the path to the image we\'re making a mosaic of')
 
     # options impacting mosaic construction
+
     arg_parser.add_argument('-i', '--imagelist', metavar = 'IMAGES', nargs = '+', help = 'draw from this list of images in constructing the mosaic')
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'specifies the approximate number of pieces the mosaic should consist of') 
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
@@ -530,12 +529,13 @@ def get_arg_parser():
 
     # options impacting output
     arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; the format of the output is determined by the file extension used')
-    arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
+    arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'never display mosaic after building it')
     arg_parser.add_argument('-l', '--log', metavar = 'FILE', help = 'produce a json log file FILE that shows which images were used where in the mosaic')
 
     # preprocessing related
-    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -d will be ignored')
     arg_parser.add_argument('-d', '--dbfile', help = 'in mosaic mode, construct mosaic using images pointed to by this database file; in preprocessing mode, save the data to this file')
+    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -d will be ignored')
+    arg_parser.add_argument('-s', '--samplesize', type = int, default = 300, help = 'sample size to use when examining images to decide which to use where in the mosaic')
  
     return arg_parser
 
@@ -554,7 +554,7 @@ if __name__ == '__main__':
         arg_parser.print_help()
         sys.exit(1)
     except NoCandidatesException:
-        print('No images given to use as pieces of the mosaic. Use -i or -d options to specify some.\n')
+        print('No images given to use as pieces of the mosaic. Use -i or -d arguments to specify some.\n')
         sys.exit(1)
     except TooFewCandidatesException:
         print('\nERROR: Not enough candidate images to use them uniquely! Provide more or make a mosaic with fewer or non-unique pieces.\n')
