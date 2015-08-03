@@ -8,8 +8,8 @@ import argparse
 import getopt
 import json
 import math
-import random
 import os
+import random
 import re
 import struct
 import sys
@@ -18,15 +18,45 @@ import sys
 # TODO: for "unique" maybe move in this direction - find best overall fit rather than just going through each piece in order (which causes the image to get worse left to right) 
 # TODO: add alternative means of comparing images (like something from scikit-img)
 # TODO: add option for changing sample sizes - include option for sampling ALL pixels
-# TODO: Work on python 3 compatibility
+# TODO: Keep testing python 3 compatibility
 # TODO: add "satisficing" strategy as an option (rather than always trying to find the "best" match)
-# TODO: get rid of dataset
+
+# for python 2+3 compatibility
+# per http://stackoverflow.com/questions/954834/how-do-i-use-raw-input-in-python-3-1
+global input
+try: input = raw_input
+except NameError: pass
+
+
+# Exception definitions
+class ArgumentException(Exception):
+    pass
+
+
+class NoCandidatesException(Exception):
+    pass
+
 
 class TooFewCandidatesException(Exception):
     pass
 
-class ArgumentException(Exception):
-    pass
+
+# Samplers are objects that know how to take samples of sets of pixels and return information about their color. They wrap basic
+# information about the sample size and about which pixels to sample. Reusing the same sampler between multiple images gives us
+# consistency so that we can make meaningful comparisons between them. 
+# 
+# Matchers are objects that have access to a pool of "candidate" images and a sampler. If you pass an image to their "get_match" 
+# method, they will use their sampler to compare that image to each of their candidates and return the candidate they decide is
+# most visually similar to it.
+# 
+# Class definitions for matchers and samplers below, and a couple of convenience functions for returning the appropriate sampler
+# or matcher, depending on the characteristics we want.
+
+def get_sampler(pixelwise, sample_size, width = 1000, height = 1000):
+    if pixelwise:
+        return PixelwiseSampler(sample_size, width, height)
+    else:
+        return AverageSampler(sample_size, width, height)
 
 def get_matcher(pixelwise, unique, candidates, sampler, width = 1000, height = 1000):
     # TODO: can width and height be removed as parameters? i.e., does passing the actual width/height of the images improve the result?
@@ -40,23 +70,21 @@ def get_matcher(pixelwise, unique, candidates, sampler, width = 1000, height = 1
 
     return RgbMatcher(candidates, unique, sampler)
 
-def get_sampler(pixelwise, sample_size, width = 1000, height = 1000):
-    if pixelwise:
-        return PixelwiseSampler(sample_size, width, height)
-    else:
-        return AverageSampler(sample_size, width, height)
 
 class Sampler(object):
     def __init__(self, sample_size, pts_to_sample, width = 1000, height = 1000):
-        #TODO: potentially remove width 
+        #TODO: potentially remove width and height?
         self.sample_size = sample_size
         self.width = width
         self.height = height
         self.pts_to_sample = [(random.randint(0, self.width - 1), random.randint(0, self.height - 1)) for i in range(sample_size)]  # maybe use randrange
     
     def sample_image(self, image):
-        image = make_proportional(image, self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB')  # maybe avoid actually resizing/reproportioning the image
+        # before taking a sample, have to scale every image to the same dimensions and clip them all to the same width / height ratio
+        # otherwise, one pixel won't be comparable with another
+        image = make_proportional(image, self.width / self.height).resize((self.width, self.height)).convert(mode = 'RGB') 
         return [image.getpixel((x, y)) for x, y in self.pts_to_sample]
+
 
 class AverageSampler(Sampler):
 
@@ -66,6 +94,8 @@ class AverageSampler(Sampler):
         return math.sqrt((avgA['r'] - avgB['r'])**2 + (avgA['g'] - avgB['g'])**2 + (avgA['b'] - avgB['b'])**2)
 
     # maybe give AverageSampler back its own sample_image - it can take random samples instead of using pts_to_sample every time
+    # problem is that won't work in preprocessing
+
 
 class PixelwiseSampler(Sampler):
 
@@ -148,7 +178,6 @@ class RgbMatcher(Matcher):
 
     def __init__(self, candidates, unique, sampler):
         self.candidates = list(candidates)
-        #self.sample_size = sample_size  # this only matters to the sample we take of images we're trying to find a match for; the candidates have already been sampled
         self.sampler = sampler
         self.unique = unique
 
@@ -158,8 +187,14 @@ class RgbMatcher(Matcher):
             yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
 
 
-def collect_candidates(db_data, paths, sampler):
-    candidates = db_data or {}
+def collect_candidates(preprocessed_data, paths, sampler):
+    # Users can provide Mosaigraph with candidate images in a couple of ways. They can provide a "preprocessing file"
+    # that contains a set of image paths that are already processed (i.e., we've stored the colors of a sample of pixels), 
+    # or they can directly provide a set of image paths (which will need to be processed now). This function collects 
+    # preprocessed data and the list of paths into a single uniformly structured list that contains all necessary sampling 
+    # information, processing images as needed.
+
+    candidates = preprocessed_data or {}
 
     paths = paths or []
     for path in paths:
@@ -169,29 +204,33 @@ def collect_candidates(db_data, paths, sampler):
     total_num = len(candidates)
     print('{} candidates to process'.format(total_num))
     
-    unique_candidates = []  # TODO: should this be a list or a dict?
-    # TODO: possible to do all of the following while building the candidates list, to avoid having to go through the list 2x?
+    candidate_list = []  # TODO: should this be a list or a dict?
+    
+    # Could for now only do this processing on the raw "paths", since we already did it on preprocessed images.
+    # But it makes sense to do it this way if I add multiple types of preprocessing, like "averaging" versus saving 
+    # all sampled pixels (since if we preprocessed average colors, we may still need to do the processing if the user
+    # wants this run to be pixelwise).
     for candidate_num, key in enumerate(candidates):
         candidate = candidates[key] 
         sys.stdout.write('\rProcessing candidate {} out of {}'.format(candidate_num + 1, total_num))
         sys.stdout.flush()
 
         if candidate.get('pixels') is not None:
-            print candidate['pixels']
-            candidate['pixels'] = json.loads(candidate['pixels'])  # TODO: take out this extra json.loads
+            candidate['pixels'] = candidate['pixels']
 
         if candidate.get('pixels') is None:
-            print('needed to process!')  # TODO: take out this line
             result = process_image(candidate['path'], sampler)  # TODO: Handle case where this doesn't work
             if result:
                 candidate.update(result)
             else:
                 continue
+        
+        candidate['path'] = key
 
-        unique_candidates.append(candidate)
+        candidate_list.append(candidate)
 
     print('')
-    return unique_candidates
+    return candidate_list
 
 def process_image(path, sampler):
     try:
@@ -202,7 +241,7 @@ def process_image(path, sampler):
         # TODO: check for struct.error elsewhere?
         return None
     
-    d = dict(path = path)
+    d = {}
 
     d['pixels'] = sampler.sample_image(image)
     # maybe add an option to suppress 'pixels' from the result 
@@ -311,8 +350,6 @@ def preprocess(image_files, dbfile, db_data, sampler):
             print('{} couldn\'t be processed'.format(path))
             continue
 
-        new_row['pixels'] = json.dumps(new_row['pixels'])
-
         db_data['image_data'][path] = new_row
 
         sys.stdout.write('processed file number {}\r'.format(file_num + 1))
@@ -324,7 +361,7 @@ def preprocess(image_files, dbfile, db_data, sampler):
     with open(dbfile, 'w') as f:
         json.dump(db_data, f) # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
 
-def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, unique):
+def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_order, unique):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
     # img: the base image
@@ -332,20 +369,18 @@ def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, uniq
     #   Actual number of pieces may differ. We are restricted by the fact that the pieces are square-shaped. Also, the lengths of the edges, as well as the number of
     #   divisions we make along the x and y axes, must be integers.
     # matcher: a matcher object that knows how to find images that fit well in a given section of the mosaic
-    # edge_length: the pieces of the mosaic will have edges this long
+    # scale_pieces_to_length: the pieces of the mosaic will have edges this long
     # randomize_order: randomize the order in which we add pieces to the mosaic
     # unique: if True, candidate images won't be reused within a given mosaic
-
-    # TODO: subjective observation, randomize_order seems to make it slower. Is this correct?
 
     log = []  # record of which images we've used where in the mosaic so we can report back to our caller
     loaded_images = {}  # loading images is a very expensive operation - keep a cache of loaded images to minimize this
 
     width, height = img.size
     
-    edge_length_orig = get_best_edge_length(width, height, num_pieces)  # original image will be broken into pieces of this length
-    numX = width // edge_length_orig
-    numY = height // edge_length_orig
+    division_length = get_best_edge_length(width, height, num_pieces)  # original image will be broken into pieces of this length
+    numX = width // division_length
+    numY = height // division_length
 
     actual_num_pieces = numX * numY
     print('Dividing mosaic into {} pieces'.format(actual_num_pieces))
@@ -356,18 +391,18 @@ def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, uniq
     piece_ids = [(x, y) for x in range(0, numX) for y in range(0, numY)]
 
     # On "unique" mode, we can run low on good images to use. Randomizing the order in which we add each piece to the mosaic
-    # prevents having one section of the mosaic look worse just because it was made later. (Though can just lead to an
+    # prevents having a large section of the mosaic look worse just because it was made later. (Though can just lead to an
     # image that looks equally bad all over).
     if randomize_order:
         random.shuffle(piece_ids)
 
     # create a blank image - we'll paste the mosaic onto this as we assemble it, piece by piece
-    result_image = Image.new(img.mode, (numX * edge_length, numY * edge_length))
+    result_image = Image.new(img.mode, (numX * scale_pieces_to_length, numY * scale_pieces_to_length))
 
     # now iterate through each piece in the original image, find matching images among the candidates, and paste matches into result_image
     for current_num, (x, y) in enumerate(piece_ids):
         # TODO: now that I'm switching to using matching objects, compare with older versions to see if I lost any quality in resulting mosaics
-        old_piece = img.crop((x * edge_length_orig, y * edge_length_orig, (x + 1) * edge_length_orig, (y + 1) * edge_length_orig))
+        old_piece = img.crop((x * division_length, y * division_length, (x + 1) * division_length, (y + 1) * division_length))
 
         match = matcher.get_match(old_piece)
         path = match['path']
@@ -375,14 +410,13 @@ def make_mosaigraph(img, num_pieces, matcher, edge_length, randomize_order, uniq
         if path in loaded_images:  # TODO: Maybe matcher should handle caching
             new_piece = loaded_images[path]  # get image from the cache if we can
         else:
-            new_piece = make_proportional(Image.open(path)).resize((edge_length, edge_length))
-        
-        if not unique: 
-            # no point in caching if unique, since we load a different image each time
-            loaded_images[path] = new_piece  # if we must load the image, add it to our cache
+            new_piece = make_proportional(Image.open(path)).resize((scale_pieces_to_length, scale_pieces_to_length))
+            if not unique: 
+                # no point in caching if unique, since we load a different image each time
+                loaded_images[path] = new_piece  # if we must load the image, add it to our cache
 
         log.append({ 'x': x, 'y': y, 'path': path })
-        result_image.paste(new_piece, (x * edge_length, y * edge_length))
+        result_image.paste(new_piece, (x * scale_pieces_to_length, y * scale_pieces_to_length))
         sys.stdout.write('\rCompleted piece {} out of {}'.format(current_num + 1, actual_num_pieces))
         sys.stdout.flush()
 
@@ -395,9 +429,8 @@ def main(args):
 
     sample_size = 300  # TODO: make it so this can be set by the user
 
-    db_data = None
-    loaded_sample_info = None
-    pts_to_sample = None
+    db_data = {}
+    loaded_sampling_info = None  # information pulled from a preprocessing file about how the preprocessed images were sampled 
 
     pixelwise = args.pixelwise or args.preprocess
 
@@ -405,66 +438,67 @@ def main(args):
         try:
             with open(args.dbfile, 'r') as f:
                 db_data = json.load(f)
-            loaded_sample_info = db_data.get('sample_info')
+            loaded_sampling_info = db_data.get('sampling_info')
         except IOError as e:
+            # if we're preprocessing and we had issues opening the file, it probably just doesn't exist yet
+            # we can just try to create it later on
             if args.preprocess:
-                db_data = { 'sample_info': {}, 'image_data': {} }
+                db_data = { 'sampling_info': {}, 'image_data': {} }
             else:
                 raise e
 
-    if loaded_sample_info and pixelwise:
+    if loaded_sampling_info and pixelwise:
+        if loaded_sampling_info['sample_size'] != sample_size:
+            # TODO: make this warning meaningful by allowing user to set sample size
+            print('Warning! Not using specified sample size; using the one from the preprocessing file instead.')
+            sample_size = loaded_sampling_info['sample_size']
+
+    sampler = get_sampler(pixelwise, sample_size)
+    if loaded_sampling_info and loaded_sampling_info['pts_sampled']:
         # we need to sample the same spots in each image for pixelwise comparisons to be valid
         # so if we're using samples we stored in a db file, we need to pull info about 
         # which points we sampled and use the same points for any further comparisons
+        sampler.pts_to_sample = loaded_sampling_info['pts_sampled']
 
-        pts_to_sample = json.loads(loaded_sample_info['pts_sampled'])
-
-        if loaded_sample_info['sample_size'] != sample_size:
-            # TODO: make this warning meaningful by allowing user to set sample size
-            print('Warning! Not using specified sample size; using the one from the preprocessing file instead.')
-            sample_size = loaded_sample_info['sample_size']
-
-    sampler = get_sampler(pixelwise, sample_size)
-    if pts_to_sample:
-        sampler.pts_to_sample = pts_to_sample
-
-    if args.preprocess:
-        if db_data is None:
-            raise ArgumentException('Must specify a filename for saving the preprocessing data. Use the -d argument.')
-        # if we hadn't stored a sample size and set of points to sample in the db, write one now
-        if not loaded_sample_info:
-            db_data['sample_info'] = { 'pts_sampled': json.dumps(sampler.pts_to_sample), 'sample_size': sample_size }
+    if args.preprocess:  # we're being asked to preprocess a list of images
+        if not args.dbfile:
+            raise ArgumentException('Must specify a filename to which to save the preprocessing data. Use the -d argument.')
+        # if we hadn't stored a sample size and set of points to sample in the db, add one to our db_data so it's included when we dump db_data to a file
+        if not loaded_sampling_info:
+            db_data['sampling_info'] = { 'pts_sampled': sampler.pts_to_sample, 'sample_size': sample_size }
         preprocess(args.preprocess, args.dbfile, db_data, sampler)
 
-    elif args.filename:
+    elif args.baseimage:  # we got an image to turn into a mosaic
         if args.outfile and os.path.exists(args.outfile):
             while True:
-                input = raw_input('Overwrite existing file {}? (y/n) '.format(args.outfile))
-                if input == 'y':
+                response = input('Overwrite existing file {}? (y/n) '.format(args.outfile))
+                if response == 'y':
                     break
-                if input == 'n':
+                if response == 'n':
                     print('Canceling...')
                     sys.exit(0)
 
-        print('Making mosaic out of {}...'.format(args.filename))
+        print('Making mosaic out of {}...'.format(args.baseimage))
        
         image_data = None
         if db_data:
             image_data = db_data['image_data']
 
         candidates = collect_candidates(image_data, args.imagelist, sampler)
-
+        if len(candidates) == 0:
+            raise NoCandidatesException
         print('Using pool of {} candidate images'.format(len(candidates)))
         
-        input_image = Image.open(args.filename)
+        input_image = Image.open(args.baseimage)
 
         # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
         matcher = get_matcher(pixelwise, args.unique, candidates, sampler)
 
         mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
-      
-        # maybe this should always be pixelwise
-        print('New mosaic produced with average difference {}'.format(sampler.compare(input_image, mosaic)))
+     
+        result_tester = get_sampler(False, 1000)
+
+        print('New mosaic produced with average difference {} from the original image'.format(result_tester.compare(input_image, mosaic)))
 
         if args.outfile:
             print('Saving mosaic as {}'.format(args.outfile))
@@ -473,9 +507,9 @@ def main(args):
             if not args.nooutput:
                 print('Showing output')
                 mosaic.show()
-        if args.json:
-            print('Saving json output as {}'.format(args.json))
-            with open(args.json, 'w') as f:
+        if args.log:
+            print('Saving json output as {}'.format(args.log))
+            with open(args.log, 'w') as f:
                 json.dump(dict, f)
 
     else:
@@ -484,24 +518,24 @@ def main(args):
 def get_arg_parser():
     arg_parser = argparse.ArgumentParser()
  
-    # options/argument for mosaic mode only
-    arg_parser.add_argument('-i', '--imagelist', metavar = 'IMAGES', nargs = '+', help = 'draw from this set of images in constructing mosaic')
-    arg_parser.add_argument('-j', '--json', metavar = 'FILE', help = 'produce a json file FILE that shows which images were used where in the mosaic')
-    arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'the mosaic should consist of about this many pieces')
-    arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; if not specified, will attempt to display the image in a default image viewer, but won\'t save it; format of output file is determined by extension (so .jpg for jpg, .png for png)')
+    arg_parser.add_argument('baseimage', nargs = '?', help = 'the path to the image we\'re making a mosaic of')
+
+    # options impacting mosaic construction
+    arg_parser.add_argument('-i', '--imagelist', metavar = 'IMAGES', nargs = '+', help = 'draw from this list of images in constructing the mosaic')
+    arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'specifies the approximate number of pieces the mosaic should consist of') 
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
-    arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
+    arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'use a pixel-by-pixel comparison in deciding on which images fit where in the mosaic, instead of just looking at overall average color; slower, but better results than the default averaging mode')
     arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'each square piece of the resulting image will have edges this many pixels long; increase this value if the individual images are too pixelated and hard to make out, even when zoomed')
 
-    arg_parser.add_argument('filename', nargs = '?', help = 'the filename of the image we\'re making a mosaic of')
+    # options impacting output
+    arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; the format of the output is determined by the file extension used')
+    arg_parser.add_argument('-x', '--nooutput', action = 'store_true', help = 'don\'t show mosaic file after it\'s built')
+    arg_parser.add_argument('-l', '--log', metavar = 'FILE', help = 'produce a json log file FILE that shows which images were used where in the mosaic')
 
-    # option to turn on preprocessing mode
-    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -g and -d will be ignored')
-
-    # options usable in both mosaic mode and preprocessing mode
+    # preprocessing related
+    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -d will be ignored')
     arg_parser.add_argument('-d', '--dbfile', help = 'in mosaic mode, construct mosaic using images pointed to by this database file; in preprocessing mode, save the data to this file')
-    arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'in mosaic mode, a pixel-by-pixel comparison of candidate images with the base image, instead of just looking at overall average rgb color; in preprocessing mode, store samples of multiple pixels in each candidate image, useful for making pixelwise mosaics; slower, but better results than the default averaging mode')
  
     return arg_parser
 
@@ -514,10 +548,16 @@ if __name__ == '__main__':
         main(args)
     except IOError as e:
         print('Failed to access file: {}'.format(e))
+        sys.exit(1)
     except ArgumentException as e:
         print(str(e))
         arg_parser.print_help()
+        sys.exit(1)
+    except NoCandidatesException:
+        print('No images given to use as pieces of the mosaic. Use -i or -d options to specify some.\n')
+        sys.exit(1)
     except TooFewCandidatesException:
         print('\nERROR: Not enough candidate images to use them uniquely! Provide more or make a mosaic with fewer or non-unique pieces.\n')
+        sys.exit(1)
 
 
