@@ -26,7 +26,6 @@ global input
 try: input = raw_input
 except NameError: pass
 
-
 # Exception definitions
 class ArgumentException(Exception):
     pass
@@ -184,52 +183,59 @@ class RgbMatcher(Matcher):
         rgb = get_color_avg(self.sampler.sample_image(image))
         for candidate in self.candidates:
             yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
+ 
+def expand_directories(paths):
+    new_paths = []
+    for path in paths:
+      if os.path.isdir(path):
+          new_paths = new_paths + [os.path.join(path, filename) for filename in os.listdir(path)]
+      else:
+          new_paths.append(path)
+    return new_paths
 
-
-def collect_candidates(preprocessed_data, paths, sampler):
+def preprocess_candidates(preprocessed_data, paths, sampler):
     # Users can provide Mosaigraph with candidate images in a couple of ways. They can provide a "preprocessing file"
     # that contains a set of image paths that are already processed (i.e., we've stored the colors of a sample of pixels), 
     # or they can directly provide a set of image paths (which will need to be processed now). This function collects 
     # preprocessed data and the list of paths into a single uniformly structured list that contains all necessary sampling 
-    # information, processing images as needed.
+    # information, preprocessing images as needed.
 
-    candidates = preprocessed_data or {}
-
-    paths = paths or []
+    candidate_dict = preprocessed_data or {}
+    paths = expand_directories(paths or [])  # TODO: expand_directories traverses the entire list of paths - can we avoid traversing it repeatedly like this?
     for path in paths:
-        full_path = unicode(os.path.abspath(path), sys.getfilesystemencoding()) # TODO: Does this need a unicode conversion?
-        candidates.setdefault(full_path, dict(path = full_path))
+        full_path = os.path.abspath(path)
+        candidate_dict.setdefault(full_path, dict(path = full_path))
 
-    total_num = len(candidates)
+    failed_paths = []
+
+    total_num = len(candidate_dict)
     print('{} candidates to process'.format(total_num))
-    
-    candidate_list = []  # TODO: should this be a list or a dict?
-    
-    # Could for now only do this processing on the raw "paths", since we already did it on preprocessed images.
-    # But it makes sense to do it this way if I add multiple types of preprocessing, like "averaging" versus saving 
-    # all sampled pixels (since if we preprocessed average colors, we may still need to do the processing if the user
-    # wants this run to be pixelwise).
-    for candidate_num, key in enumerate(candidates):
-        candidate = candidates[key] 
-        sys.stdout.write('\rProcessing candidate {} out of {}'.format(candidate_num + 1, total_num))
-        sys.stdout.flush()
+    candidate_num = 0
 
-        if candidate.get('pixels') is not None:
-            candidate['pixels'] = candidate['pixels']
+    # Admittedly, it's a bit redundant to loop through all the candidates here, since everything that isn't in "paths" was 
+    # already preprocessed, in principle...
+    for path, candidate in candidate_dict.items():
+        candidate_num += 1
+        sys.stdout.write('\rProcessing candidate {} out of {}'.format(candidate_num, total_num))
+        sys.stdout.flush()
 
         if candidate.get('pixels') is None:
             result = process_image(candidate['path'], sampler)  # TODO: Handle case where this doesn't work
             if result:
                 candidate.update(result)
             else:
+                failed_paths.append(path)
                 continue
         
-        candidate['path'] = key
-
-        candidate_list.append(candidate)
+        candidate['path'] = path
 
     print('')
-    return candidate_list
+
+    for path in failed_paths:
+        print('Note: unable to use file {}'.format(path))
+        del candidate_dict[path]
+        
+    return candidate_dict
 
 def process_image(path, sampler):
     try:
@@ -278,8 +284,8 @@ def get_n_pixels(img, n):
         yield img.getpixel((x, y))
 
 def get_best_edge_length(width, height, num_pieces):
-    # If we have a rectangle of width and height, and we want to divide it into num_pieces squares of equal size
-    # how long should each square's sides be to get as close as possible to num_pieces?
+    # If we have a rectangle of width and height, and we want to divide it into num_pieces squares of equal size,
+    # return how long each square's sides be should to get as close as possible to num_pieces
  
     # get an initial estimate
     # maybe would be simpler to just start with an estimate of 1, then iterate up
@@ -322,44 +328,6 @@ def make_proportional(img, ratio = 1):
     else:
         return img
 
-def preprocess(image_files, dbfile, db_data, sampler):
-    # process a given iterable of image_files, finding and storing the "average" color of the images in 
-    # the given database table, and samples of pixels
-
-    rows_to_insert = [] 
-
-    num_files = len(image_files)
-    print('{} files to process'.format(num_files))
-
-    skipped = 0
-    for file_num, filename in enumerate(image_files):
-
-        path = os.path.abspath(unicode(filename, sys.getfilesystemencoding()))
-
-        # if we already have a row in the db for this path, find it
-        original_row = db_data['image_data'].get(path)
-        if original_row:
-            # if we've already gotten the data we need for this path, don't do any more calculations
-            skipped += 1
-            continue
-
-        new_row = process_image(path, sampler)
-
-        if not new_row:
-            print('{} couldn\'t be processed'.format(path))
-            continue
-
-        db_data['image_data'][path] = new_row
-
-        sys.stdout.write('processed file number {}\r'.format(file_num + 1))
-        sys.stdout.flush()
-
-    
-    print('')
-
-    with open(dbfile, 'w') as f:
-        json.dump(db_data, f) # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
-
 def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_order, unique):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
@@ -397,10 +365,11 @@ def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_
 
     # create a blank image - we'll paste the mosaic onto this as we assemble it, piece by piece
     result_image = Image.new(img.mode, (numX * scale_pieces_to_length, numY * scale_pieces_to_length))
+    
+    print('Beginning to select pieces...')
 
     # now iterate through each piece in the original image, find matching images among the candidates, and paste matches into result_image
     for current_num, (x, y) in enumerate(piece_ids):
-        # TODO: now that I'm switching to using matching objects, compare with older versions to see if I lost any quality in resulting mosaics
         old_piece = img.crop((x * division_length, y * division_length, (x + 1) * division_length, (y + 1) * division_length))
 
         match = matcher.get_match(old_piece)
@@ -423,50 +392,62 @@ def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_
     return result_image, log 
 
 def main(args):
-    # Process command line args. Depending on the result, either make a new photomosaic and display or save it (mosaic mode), or simply
-    # preprocess images and save them to a database file (preprocessing mode)
+    # Process command line args. Depending on the args, decide whether to construct a mosaic and whether to save the preprocessing results
+
+    save_preprocessing = args.preprocessingfile and not args.discardpreprocessing and args.imagelist
+
+    if not (args.baseimage or save_preprocessing):
+        raise ArgumentException('Nothing to do!')
 
     sample_size = args.samplesize
 
-    db_data = {}
+    preprocessing_data = {}
     loaded_sampling_info = None  # information pulled from a preprocessing file about how the preprocessed images were sampled 
 
-    pixelwise = args.pixelwise or args.preprocess
-
-    if args.dbfile:
+    if args.preprocessingfile:
+        print('Loading preprocessing file...')
         try:
-            with open(args.dbfile, 'r') as f:
-                db_data = json.load(f)
-            loaded_sampling_info = db_data.get('sampling_info')
+            with open(args.preprocessingfile, 'r') as f:
+                preprocessing_data = json.load(f)
+            loaded_sampling_info = preprocessing_data.get('sampling_info')
         except IOError as e:
-            # if we're preprocessing and we had issues opening the file, it probably just doesn't exist yet
-            # we can just try to create it later on
-            if args.preprocess:
-                db_data = { 'sampling_info': {}, 'image_data': {} }
-            else:
-                raise e
+            print('Note: couldn\'t open specified preprocessing file.') 
+            if save_preprocessing:
+                print('Will attempt to create it later on.')
+                preprocessing_data = { 'sampling_info': {}, 'image_data': {} }
 
-    if loaded_sampling_info and pixelwise:
+    # for pixelwise comparisons to make sense, we need to sample the same pixels in each image
+    # thus, we need to use the same sample size as what's in the preprocessing file for the file to be useful
+    if loaded_sampling_info and args.pixelwise:
         if loaded_sampling_info['sample_size'] != sample_size:
             print('Warning! Not using specified sample size; using the one from the preprocessing file instead.')
             sample_size = loaded_sampling_info['sample_size']
 
-    sampler = get_sampler(pixelwise, sample_size)
-    if loaded_sampling_info and loaded_sampling_info['pts_sampled']:
-        # we need to sample the same spots in each image for pixelwise comparisons to be valid
-        # so if we're using samples we stored in a db file, we need to pull info about 
-        # which points we sampled and use the same points for any further comparisons
+    # also, if we're using samples we stored in a preprocessing file, we need to pull info about 
+    # which points we sampled and use the same points for any further comparisons
+    sampler = get_sampler(args.pixelwise, sample_size)
+    if loaded_sampling_info: 
         sampler.pts_to_sample = loaded_sampling_info['pts_sampled']
 
-    if args.preprocess:  # we're being asked to preprocess a list of images
-        if not args.dbfile:
-            raise ArgumentException('Must specify a filename to which to save the preprocessing data. Use the -d argument.')
-        # if we hadn't stored a sample size and set of points to sample in the db, add one to our db_data so it's included when we dump db_data to a file
-        if not loaded_sampling_info:
-            db_data['sampling_info'] = { 'pts_sampled': sampler.pts_to_sample, 'sample_size': sample_size }
-        preprocess(args.preprocess, args.dbfile, db_data, sampler)
+    image_data = None
+    if preprocessing_data:
+        image_data = preprocessing_data['image_data']
 
-    elif args.baseimage:  # we got an image to turn into a mosaic
+    candidate_dict = preprocess_candidates(image_data, args.imagelist, sampler)
+
+    if save_preprocessing:
+        data_to_save = {
+              'image_data': candidate_dict, 
+              'sampling_info': loaded_sampling_info or { 'pts_sampled': sampler.pts_to_sample, 'sample_size': sample_size }
+              }
+        print('Writing preprocessed data to {}...'.format(args.preprocessingfile))
+        with open(args.preprocessingfile, 'w') as f:
+            # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
+            json.dump(data_to_save, f) 
+
+    candidate_list = candidate_dict.values()
+
+    if args.baseimage:  # we got an image to turn into a mosaic
         if args.outfile and os.path.exists(args.outfile):
             while True:
                 response = input('Overwrite existing file {}? (y/n) '.format(args.outfile))
@@ -478,24 +459,16 @@ def main(args):
 
         print('Making mosaic out of {}...'.format(args.baseimage))
        
-        image_data = None
-        if db_data:
-            image_data = db_data['image_data']
-
-        candidates = collect_candidates(image_data, args.imagelist, sampler)
-        if len(candidates) == 0:
+        if len(candidate_list) == 0:
             raise NoCandidatesException
-        print('Using pool of {} candidate images'.format(len(candidates)))
+
+        print('Using pool of {} candidate images'.format(len(candidate_list)))
         
         input_image = Image.open(args.baseimage)
-
-        # TODO: should we pass width/height hints (i.e., edge_length_orig x edge_length_orig) to get_matcher?
-        matcher = get_matcher(pixelwise, args.unique, candidates, sampler)
-
-        mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.piecesize, args.randomize, args.unique)
+        matcher = get_matcher(args.pixelwise, args.unique, candidate_list, sampler)
+        mosaic, dict = make_mosaigraph(input_image, args.n, matcher, args.edgesize, args.randomize, args.unique)
      
         result_tester = get_sampler(False, 1000)
-
         print('New mosaic produced with average difference {} from the original image'.format(result_tester.compare(input_image, mosaic)))
 
         if args.outfile:
@@ -505,13 +478,11 @@ def main(args):
             if not args.nooutput:
                 print('Showing output')
                 mosaic.show()
+
         if args.log:
-            print('Saving json output as {}'.format(args.log))
+            print('Saving log as {}'.format(args.log))
             with open(args.log, 'w') as f:
                 json.dump(dict, f)
-
-    else:
-        raise ArgumentException('Nothing to do!')
 
 def get_arg_parser():
     arg_parser = argparse.ArgumentParser()
@@ -520,12 +491,12 @@ def get_arg_parser():
 
     # options impacting mosaic construction
 
+    arg_parser.add_argument('-e', '--edgesize', type = int, default = 100, help = 'each square piece of the resulting image will have edges this many pixels long; increase this value if the individual images are too pixelated and hard to make out, even when zoomed')
     arg_parser.add_argument('-i', '--imagelist', metavar = 'IMAGES', nargs = '+', help = 'draw from this list of images in constructing the mosaic')
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'specifies the approximate number of pieces the mosaic should consist of') 
     arg_parser.add_argument('-r', '--randomize', action = 'store_true', help = 'randomize the order in which pieces get added to the mosaic')
     arg_parser.add_argument('-u', '--unique', action = 'store_true', help = 'don\'t use any image as a piece of the mosaic more than once')
     arg_parser.add_argument('-w', '--pixelwise', action = 'store_true', help = 'use a pixel-by-pixel comparison in deciding on which images fit where in the mosaic, instead of just looking at overall average color; slower, but better results than the default averaging mode')
-    arg_parser.add_argument('-z', '--piecesize', type = int, default = 100, help = 'each square piece of the resulting image will have edges this many pixels long; increase this value if the individual images are too pixelated and hard to make out, even when zoomed')
 
     # options impacting output
     arg_parser.add_argument('-o', '--outfile', metavar = 'FILE', help = 'save the mosaic as FILE; the format of the output is determined by the file extension used')
@@ -533,14 +504,13 @@ def get_arg_parser():
     arg_parser.add_argument('-l', '--log', metavar = 'FILE', help = 'produce a json log file FILE that shows which images were used where in the mosaic')
 
     # preprocessing related
-    arg_parser.add_argument('-d', '--dbfile', help = 'in mosaic mode, construct mosaic using images pointed to by this database file; in preprocessing mode, save the data to this file')
-    arg_parser.add_argument('-p', '--preprocess', metavar = 'IMAGE', nargs = '+', help = 'switch to preprocessing mode; preprocess specified image file[s], adding to the pool of potential images in our database; options and arguments other than -d will be ignored')
+    arg_parser.add_argument('-d', '--discardpreprocessing', action = 'store_true', help = 'skip saving preprocessing to a file, even if a file was specified')
+    arg_parser.add_argument('-p', '--preprocessingfile', help = 'if constructing mosaic, construct mosaic using images pointed to by this file; if images are specified that aren\'t already in file, save the preprocessing data here')
     arg_parser.add_argument('-s', '--samplesize', type = int, default = 300, help = 'sample size to use when examining images to decide which to use where in the mosaic')
  
     return arg_parser
 
 if __name__ == '__main__':
-    dbfile = None
     arg_parser = get_arg_parser()
     args = arg_parser.parse_args()
 
@@ -554,10 +524,8 @@ if __name__ == '__main__':
         arg_parser.print_help()
         sys.exit(1)
     except NoCandidatesException:
-        print('No images given to use as pieces of the mosaic. Use -i or -d arguments to specify some.\n')
+        print('No images given to use as pieces of the mosaic. Use the -i or -p arguments to provide some. If you provided a preprocessing file, make sure you provided the right path.')
         sys.exit(1)
     except TooFewCandidatesException:
         print('\nERROR: Not enough candidate images to use them uniquely! Provide more or make a mosaic with fewer or non-unique pieces.\n')
         sys.exit(1)
-
-
