@@ -183,78 +183,7 @@ class RgbMatcher(Matcher):
         rgb = get_color_avg(self.sampler.sample_image(image))
         for candidate in self.candidates:
             yield (candidate['r'] - rgb['r'])**2 + (candidate['g'] - rgb['g'])**2 + (candidate['b'] - rgb['b'])**2
- 
-def expand_directories(paths):
-    new_paths = []
-    for path in paths:
-      if os.path.isdir(path):
-          new_paths = new_paths + [os.path.join(path, filename) for filename in os.listdir(path)]
-      else:
-          new_paths.append(path)
-    return new_paths
 
-def preprocess_candidates(preprocessed_data, paths, sampler):
-    # Users can provide Mosaigraph with candidate images in a couple of ways. They can provide a "preprocessing file"
-    # that contains a set of image paths that are already processed (i.e., we've stored the colors of a sample of pixels), 
-    # or they can directly provide a set of image paths (which will need to be processed now). This function collects 
-    # preprocessed data and the list of paths into a single uniformly structured list that contains all necessary sampling 
-    # information, preprocessing images as needed.
-
-    candidate_dict = preprocessed_data or {}
-    paths = expand_directories(paths or [])  # TODO: expand_directories traverses the entire list of paths - can we avoid traversing it repeatedly like this?
-    for path in paths:
-        full_path = os.path.abspath(path)
-        candidate_dict.setdefault(full_path, dict(path = full_path))
-
-    failed_paths = []
-
-    total_num = len(candidate_dict)
-    print('{} candidates to process'.format(total_num))
-    candidate_num = 0
-
-    # Admittedly, it's a bit redundant to loop through all the candidates here, since everything that isn't in "paths" was 
-    # already preprocessed, in principle...
-    for path, candidate in candidate_dict.items():
-        candidate_num += 1
-        sys.stdout.write('\rProcessing candidate {} out of {}'.format(candidate_num, total_num))
-        sys.stdout.flush()
-
-        if candidate.get('pixels') is None:
-            result = process_image(candidate['path'], sampler)  # TODO: Handle case where this doesn't work
-            if result:
-                candidate.update(result)
-            else:
-                failed_paths.append(path)
-                continue
-        
-        candidate['path'] = path
-
-    print('')
-
-    for path in failed_paths:
-        print('Note: unable to use file {}'.format(path))
-        del candidate_dict[path]
-        
-    return candidate_dict
-
-def process_image(path, sampler):
-    try:
-        image = make_proportional(Image.open(path).convert(mode = 'RGB'))
-    except (IOError, struct.error):
-        # IOError is usually because the file isn't an image file.
-        # TODO: look into what's causing struct.error
-        # TODO: check for struct.error elsewhere?
-        return None
-    
-    d = {}
-
-    d['pixels'] = sampler.sample_image(image)
-    # maybe add an option to suppress 'pixels' from the result 
-
-    avg = get_color_avg(d['pixels'])
-    d.update(avg)
-
-    return d
 
 def get_color_avg(pixels):
     # get the average color in a iterable of rgb pixels
@@ -327,8 +256,64 @@ def make_proportional(img, ratio = 1):
         return img.crop((0, snipSize, width, height - snipSize))
     else:
         return img
+ 
+def expand_directories(paths):
+    new_paths = []
+    for path in paths:
+      if os.path.isdir(path):
+          new_paths = new_paths + [os.path.join(path, filename) for filename in os.listdir(path)]
+      else:
+          new_paths.append(path)
+    return new_paths
 
-def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_order, unique):
+
+def preprocess_paths(paths, preprocessed_data, sampler):
+  if not paths:
+      return {}
+
+  result = {}
+  
+  paths = expand_directories(paths or [])
+ 
+  failed_paths = []
+  
+  for n, path in enumerate(paths):
+      full_path = os.path.abspath(path)
+
+      sys.stdout.write('\rPreprocessing candidate {} out of {}'.format(n + 1, len(paths)))
+      sys.stdout.flush()
+
+      result[full_path] = preprocessed_data.get(full_path, {})
+
+      if result[full_path].get('pixels') is None:
+          result[full_path] = process_image(full_path, sampler)
+          if not result[full_path]:
+              del result[full_path]
+              failed_paths.append(full_path)
+
+  print('')
+
+  for path in failed_paths:
+      print('Note: unable to use file {}'.format(path))
+
+  return result
+              
+def process_image(path, sampler):
+    try:
+        image = make_proportional(Image.open(path).convert(mode = 'RGB'))
+    except (IOError, struct.error):
+        # IOError is usually because the file isn't an image file.
+        # TODO: look into what's causing struct.error
+        # TODO: check for struct.error elsewhere?
+        return None
+    
+    # maybe add an option to suppress 'pixels' from the result for an "average only" mode
+    d = {'pixels': sampler.sample_image(image)}
+    d.update(get_color_avg(d['pixels']))
+    
+    return d
+
+def make_mosaigraph(img, num_pieces, matcher, scaled_piece_size, randomize_order, unique):
     # makes a photomosaic, returning a PIL.Image representing it, which can then be displayed, saved, etc, and a dict describing the images used and where
 
     # img: the base image
@@ -336,7 +321,7 @@ def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_
     #   Actual number of pieces may differ. We are restricted by the fact that the pieces are square-shaped. Also, the lengths of the edges, as well as the number of
     #   divisions we make along the x and y axes, must be integers.
     # matcher: a matcher object that knows how to find images that fit well in a given section of the mosaic
-    # scale_pieces_to_length: the pieces of the mosaic will have edges this long
+    # scaled_piece_size: the pieces of the mosaic will have edges this long
     # randomize_order: randomize the order in which we add pieces to the mosaic
     # unique: if True, candidate images won't be reused within a given mosaic
 
@@ -364,7 +349,7 @@ def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_
         random.shuffle(piece_ids)
 
     # create a blank image - we'll paste the mosaic onto this as we assemble it, piece by piece
-    result_image = Image.new(img.mode, (numX * scale_pieces_to_length, numY * scale_pieces_to_length))
+    result_image = Image.new(img.mode, (numX * scaled_piece_size, numY * scaled_piece_size))
     
     print('Beginning to select pieces...')
 
@@ -378,13 +363,13 @@ def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_
         if path in loaded_images:  # TODO: Maybe matcher should handle caching
             new_piece = loaded_images[path]  # get image from the cache if we can
         else:
-            new_piece = make_proportional(Image.open(path)).resize((scale_pieces_to_length, scale_pieces_to_length))
+            new_piece = make_proportional(Image.open(path)).resize((scaled_piece_size, scaled_piece_size))
             if not unique: 
                 # no point in caching if unique, since we load a different image each time
                 loaded_images[path] = new_piece  # if we must load the image, add it to our cache
 
         log.append({ 'x': x, 'y': y, 'path': path })
-        result_image.paste(new_piece, (x * scale_pieces_to_length, y * scale_pieces_to_length))
+        result_image.paste(new_piece, (x * scaled_piece_size, y * scaled_piece_size))
         sys.stdout.write('\rCompleted piece {} out of {}'.format(current_num + 1, actual_num_pieces))
         sys.stdout.flush()
 
@@ -394,27 +379,27 @@ def make_mosaigraph(img, num_pieces, matcher, scale_pieces_to_length, randomize_
 def main(args):
     # Process command line args. Depending on the args, decide whether to construct a mosaic and whether to save the preprocessing results
 
-    save_preprocessing = args.preprocessingfile and not args.discardpreprocessing and args.imagelist
+    save_preprocessing = args.preprocessingfile and not args.discardpreprocessing
 
     if not (args.baseimage or save_preprocessing):
         raise ArgumentException('Nothing to do!')
 
     sample_size = args.samplesize
 
-    preprocessing_data = {}
+    loaded_preprocessing_data = {}
     loaded_sampling_info = None  # information pulled from a preprocessing file about how the preprocessed images were sampled 
 
     if args.preprocessingfile:
         print('Loading preprocessing file...')
         try:
             with open(args.preprocessingfile, 'r') as f:
-                preprocessing_data = json.load(f)
-            loaded_sampling_info = preprocessing_data.get('sampling_info')
+                loaded_preprocessing_data = json.load(f)
+            loaded_sampling_info = loaded_preprocessing_data.get('sampling_info')
         except IOError as e:
             print('Note: couldn\'t open specified preprocessing file.') 
             if save_preprocessing:
                 print('Will attempt to create it later on.')
-                preprocessing_data = { 'sampling_info': {}, 'image_data': {} }
+                loaded_preprocessing_data = { 'sampling_info': {}, 'image_data': {} }
 
     # for pixelwise comparisons to make sense, we need to sample the same pixels in each image
     # thus, we need to use the same sample size as what's in the preprocessing file for the file to be useful
@@ -429,21 +414,25 @@ def main(args):
     if loaded_sampling_info: 
         sampler.pts_to_sample = loaded_sampling_info['pts_sampled']
 
-    image_data = None
-    if preprocessing_data:
-        image_data = preprocessing_data['image_data']
+    all_image_data = loaded_preprocessing_data.get('image_data', {})
+    old_len = len(all_image_data)
 
-    candidate_dict = preprocess_candidates(image_data, args.imagelist, sampler)
+    preprocessed_paths = preprocess_paths(args.imagelist, loaded_preprocessing_data.get('image_data'), sampler)
+    all_image_data.update(preprocessed_paths)
 
-    if save_preprocessing:
+    if save_preprocessing and len(all_image_data) > old_len:
         data_to_save = {
-              'image_data': candidate_dict, 
+              'image_data': all_image_data, 
               'sampling_info': loaded_sampling_info or { 'pts_sampled': sampler.pts_to_sample, 'sample_size': sample_size }
               }
         print('Writing preprocessed data to {}...'.format(args.preprocessingfile))
         with open(args.preprocessingfile, 'w') as f:
             # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
             json.dump(data_to_save, f) 
+
+    candidate_dict = preprocessed_paths if args.explicitonly else all_image_data
+    for path in candidate_dict:
+        candidate_dict[path]['path'] = path  # we need the paths to be in the result of .values()
 
     candidate_list = candidate_dict.values()
 
@@ -491,6 +480,7 @@ def get_arg_parser():
 
     # options impacting mosaic construction
 
+    arg_parser.add_argument('-c', '--explicitonly', action = 'store_true', help = 'confine candidate images to ones explicitly specified in the image list, rather than including all files in the preprocessing file')
     arg_parser.add_argument('-e', '--edgesize', type = int, default = 100, help = 'each square piece of the resulting image will have edges this many pixels long; increase this value if the individual images are too pixelated and hard to make out, even when zoomed')
     arg_parser.add_argument('-i', '--imagelist', metavar = 'IMAGES', nargs = '+', help = 'draw from this list of images in constructing the mosaic')
     arg_parser.add_argument('-n', '--number', dest = 'n', type = int, default = 500, help = 'specifies the approximate number of pieces the mosaic should consist of') 
