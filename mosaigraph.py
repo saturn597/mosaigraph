@@ -466,10 +466,10 @@ def main(args):
         if args.outfile:
             print('Saving mosaic as {}'.format(args.outfile))
             mosaic.save(args.outfile)
-        else:
-            if not args.nooutput:
-                print('Showing output')
-                mosaic.show()
+
+        if not args.nooutput:
+            print('Showing output')
+            mosaic.show()
 
         if args.log:
             print('Saving log as {}'.format(args.log))
