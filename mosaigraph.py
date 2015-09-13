@@ -379,25 +379,28 @@ def make_mosaigraph(img, num_pieces, matcher, scaled_piece_size, randomize_order
 def main(args):
     # Process command line args. Depending on the args, decide whether to construct a mosaic and whether to save the preprocessing results
 
-    save_preprocessing = args.preprocessingfile and not args.discardpreprocessing
+    if args.preprocessingfile and args.savepreprocessing:
+        raise ArgumentException('Can use either -p or -P, but not both')
 
-    if not (args.baseimage or save_preprocessing):
+    if not (args.baseimage or args.savepreprocessing):
         raise ArgumentException('Nothing to do!')
+
+    preprocessingfile = args.preprocessingfile or args.savepreprocessing
 
     sample_size = args.samplesize
 
     loaded_preprocessing_data = {}
     loaded_sampling_info = None  # information pulled from a preprocessing file about how the preprocessed images were sampled 
 
-    if args.preprocessingfile:
+    if preprocessingfile:
         print('Loading preprocessing file...')
         try:
-            with open(args.preprocessingfile, 'r') as f:
+            with open(preprocessingfile, 'r') as f:
                 loaded_preprocessing_data = json.load(f)
             loaded_sampling_info = loaded_preprocessing_data.get('sampling_info')
         except IOError as e:
             print('Note: couldn\'t open specified preprocessing file.') 
-            if save_preprocessing:
+            if args.savepreprocessing:
                 print('Will attempt to create it later on.')
                 loaded_preprocessing_data = { 'sampling_info': {}, 'image_data': {} }
 
@@ -420,13 +423,13 @@ def main(args):
     preprocessed_paths = preprocess_paths(args.imagelist, loaded_preprocessing_data.get('image_data'), sampler)
     all_image_data.update(preprocessed_paths)
 
-    if save_preprocessing and len(all_image_data) > old_len:
+    if args.savepreprocessing and len(all_image_data) > old_len:
         data_to_save = {
               'image_data': all_image_data, 
               'sampling_info': loaded_sampling_info or { 'pts_sampled': sampler.pts_to_sample, 'sample_size': sample_size }
               }
-        print('Writing preprocessed data to {}...'.format(args.preprocessingfile))
-        with open(args.preprocessingfile, 'w') as f:
+        print('Writing preprocessed data to {}...'.format(preprocessingfile))
+        with open(preprocessingfile, 'w') as f:
             # might be better to do more often than just once at the end so that interruptions don't ruin everything during a long preprocessing period
             json.dump(data_to_save, f) 
 
@@ -494,8 +497,8 @@ def get_arg_parser():
     arg_parser.add_argument('-l', '--log', metavar = 'FILE', help = 'produce a json log file FILE that shows which images were used where in the mosaic')
 
     # preprocessing related
-    arg_parser.add_argument('-d', '--discardpreprocessing', action = 'store_true', help = 'skip saving preprocessing to a file, even if a file was specified')
-    arg_parser.add_argument('-p', '--preprocessingfile', help = 'if constructing mosaic, construct mosaic using images pointed to by this file; if images are specified that aren\'t already in file, save the preprocessing data here')
+    arg_parser.add_argument('-P', '--savepreprocessing', help = 'save preprocessing data to this file')
+    arg_parser.add_argument('-p', '--preprocessingfile', help = 'if constructing mosaic, construct mosaic using images pointed to by this file')
     arg_parser.add_argument('-s', '--samplesize', type = int, default = 300, help = 'sample size to use when examining images to decide which to use where in the mosaic')
  
     return arg_parser
@@ -511,7 +514,6 @@ if __name__ == '__main__':
         sys.exit(1)
     except ArgumentException as e:
         print(str(e))
-        arg_parser.print_help()
         sys.exit(1)
     except NoCandidatesException:
         print('No images given to use as pieces of the mosaic. Use the -i or -p arguments to provide some. If you provided a preprocessing file, make sure you provided the right path.')
