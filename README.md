@@ -2,91 +2,151 @@ About
 =====================
 Mosaigraph is a command line utility for making photomosaics. 
 
-A "photomosaic" consists of a large number of small images that, when placed next to each other, look like some other image. For example, here's a photomosaic produced using Mosaigraph:
+A "photomosaic" consists of a large number of small images that, when viewed together, look like some other, larger image. For example, here's a photomosaic produced using Mosaigraph:
 
-[mona5.jpg](http://saturn597.github.io/mosaics/mona5.jpg)
+[mona6.jpg](http://saturn597.github.io/mosaics/mona6.jpg)
 
-That image contains about 5000 portraits downloaded from [Wikiart](http://www.wikiart.org/). When those portraits are stitched together into a mosaic, they look like Mona Lisa's face.
+That file contains about 5000 portraits obtained from [Wikiart](http://www.wikiart.org/). When those portraits are stitched together into a mosaic, they look like Mona Lisa's face.
+
+Here's another mosaic:
+
+[armstrong1.jpg](http://saturn597.github.io/mosaics/armstrong1.jpg)
+
+It's Neil Armstrong composed of photographs taken by the Hubble Space telescope.
+
+Hubble images from [HubbleSite](http://hubblesite.org/). Neil Armstrong photo from [Wikimedia](https://commons.wikimedia.org/wiki/File:Neil_Armstrong_pose.jpg).
+
+And here are some pictures of cats, made up of pictures of cats:
+
+[cedar.jpg](http://saturn597.github.io/mosaics/cedar.jpg) |
+[guido.jpg](http://saturn597.github.io/mosaics/guido.jpg) |
+[maui.jpg](http://saturn597.github.io/mosaics/maui.jpg)
+
+Pictures of cats from [Pixabay](Pixabay.com) and from personal collection.
 
 Running Mosaigraph
 =====================
 Mosaigraph is written in Python. It should be compatible with Python 2 or 3. 
 
-You'll need to install [the Pillow library](https://python-pillow.github.io/). To do this using Pip: 
+You'll need to install [the Pillow library](https://python-pillow.github.io/) to use Mosaigraph. To do this using Pip: 
 
 `pip install pillow`
 
-Successfully installing Pillow will require you to be superuser, to use sudo, or to use virtualenv.
+Installing Pillow will require you to be superuser, to use sudo, or to use virtualenv.
 
-Once Pillow is installed, simply download the file "mosaigraph.py" and navigate to the directory that contains it. Then you can run the program as described in the following sections.
+Once Pillow is installed, simply download the file "mosaigraph.py" and navigate to the directory that contains it. One approach:
+
+`git clone https://github.com/saturn597/mosaigraph.git`
+
+`cd mosaigraph`
+
+Now you can run the program as described in the following sections.
+
+Quick Start
+=====================
+Say you have a "base image", the image you want your mosaic to look like when viewed as a whole. It is stored at `base_image_path`.
+
+Say you also have a collection of "candidate images," i.e., images Mosaigraph can use as the pieces of the mosaic. They are stored in the directory `candidate_image_directory`.
+
+So how do you make a mosaic?
+
+First, preprocess the candidate images and save the results to a file at `preprocessing_file_path`:
+
+`python mosaigraph.py -P preprocessing_file_path -i candidate_image_directory`
+
+This creates the file at `preprocessing_file_path` and saves information about your candidate images to that file.
+
+Once that's done, you can start making mosaics using your candidate images.
+
+Referencing the preprocessing file you made above, the command to make a mosaic will be: 
+
+`python mosaigraph.py base_image_path -p preprocessing_file_path [-o output_file] [-n number_of_pieces] [-u] [-w]`
+
+This will create a mosaic. 
+
+Once the mosaic is complete, Mosaigraph will try to show the result in your system's image viewer. If an output file is specified, Mosaigraph will also save the mosaic to that file, in a format depending on the filename extension you use. End the file in ".jpg" for a jpg, etc.
+
+To ensure that your work gets saved, you should specify an output file.
+
+The mosaic will consist of about 500 pieces by default. You can specify a different number of pieces using the `-n` flag as above.
+
+Use `-u` to ensure that each piece is "unique," i.e., that a given candidate image won't be used more than once.
+
+Using `-w` triggers "slow mode" - Mosaigraph will look more closely at the candidate images and will often find better matches. It can take a lot longer to produce mosaics this way.
 
 Preprocessing
 =====================
-To start, you'll need a collection of images to serve as individual "pieces" of your mosaic. 
+Again, to start making mosaics, you'll need a collection of images to serve as the mosaics' individual "pieces".
 
-Once you have such a collection, Mosaigraph will need to spend some time inspecting it before the images can be used. This "preprocessing" step is potentially very time consuming.
+These will be Mosaigraph's "candidate images" - for each piece of the mosaic, Mosaigraph picks the "candidate" that it thinks fits best. 
 
-Fortunately, Mosaigraph can save its preprocessing work to a file. In the future, you can reference the file rather than going through the entire preprocessing stage again. So for a given collection of images, the preprocessing only needs to be done once.
+Once you have a collection of candidate images, Mosaigraph will need to spend some time inspecting it before the images can be used. This "preprocessing" step is potentially very time consuming.
 
-You create a preprocessing file using the `-P` argument (upper case). The `-P` is then immediately followed by a path indicating the filename you want Mosaigraph to save to. You specify the list of files you want to preprocess using the `-i` argument. 
+Fortunately, Mosaigraph can save the results of preprocessing to a file. This way, once you do the preprocessing, you can reference the file rather than going through the entire preprocessing stage again. So for a given collection of images, the preprocessing only needs to be done once.
 
-So the command will look like this:
+You use the `-P` flag (upper case) followed by a path to create a preprocessing file at that path. You use `-i` followed by a list of paths to specify the images you want to preprocess. 
+
+So a command to preprocess a list of images looks like this:
 
 `python mosaigraph.py -P preprocessing_file_path -i image_list`
 
-This command will cause Mosaigraph to preprocess all images referenced by `image_list` and it will save the results to `preprocessing_file_path`.
+That command will preprocess the files pointed to by `image_list` and save the results to `preprocessing_file_path`.
 
-The paths in `candidate_image_list` can lead either to image files or to directories containing image files. If Mosaigraph encounters a directory in `candidate_image_list`, it will attempt to use all files within that directory as candidate images. Files that cannot be processed as images will be ignored. You can also use Unix wildcards like `*` in the `image_list`, which is convenient when referencing large numbers of images.
+The paths in `image_list` can lead either to image files or to directories containing image files. If Mosaigraph encounters a directory in `image_list`, it will attempt to preprocess all files in that directory. Files that cannot be processed as images will be ignored. You can also use Unix wildcards like `*` in the `image_list`, which is convenient when referencing large numbers of images.
 
+Again, constructing the preprocessing file can take quite some time. When starting out, consider making one with only a small number of images (<100). Using only a few images won't result in the best mosaics, but everything will happen faster so it'll be easier to play around and try things out.
 
+**Important note:**
 
-Basic usage
+The preprocessing file identifies images by their absolute paths. This means that if you rename images or move them to a different directory after producing the preprocessing file, Mosaigraph will be unable to find them again.
+
+Basic mosaic creation
 =====================
-The only things you need to make a mosaic are 1) a "base image" and 2) images to use as pieces of the mosaic. 
+Once the preprocessing is done, you can start making mosaics! 
 
-Thus, you can run Mosaigraph using a command that looks like this:
+The simplest command looks like this:
 
-`python mosaigraph.py base_image -i candidate_image_list`
+`python mosaigraph.py base_image_path -p preprocessing_file_path`
 
-The `base_image` argument is a path to a single image file. This is the image the mosaic will look like when viewed as a whole.
+The `base_image_path` argument identifies the image your mosaic will look like when viewed as a whole. This is Mosaigraph's only positional argument - you don't need to precede it with any flags. 
 
-The argument to `-i`, `candidate_image_list`, is a space-separated list of paths. The "candidate images" referenced by this list will serve as the individual "pieces" of the mosaic. 
+The `-p` flag (lower case) followed by a path tells Mosaigraph to pull images from an existing preprocessing file located at that path.
 
-The paths in `candidate_image_list` can lead either to image files or to directories containing image files. If Mosaigraph encounters a directory in `candidate_image_list`, it will attempt to use all files within that directory as candidate images. Files that cannot be processed as images will be ignored. You can also use Unix wildcards like `*` in the `candidate_image_list`, which is convenient when referencing large numbers of images.
+Once the command above finishes, Mosaigraph will attempt to open the resulting mosaic in your system's default image viewer. Enjoy!
 
-Not all candidate images will necessarily end up in the final mosaic. Mosaigraph uses only the ones it thinks "fit" best.
-
-More advanced usage
+More advanced mosaic creation
 =====================
-A slightly more complex invocation of Mosaigraph looks like this:
+A more complex invocation of Mosaigraph looks like this:
 
-`python mosaigraph.py base_image -i candidate_image_list -o output_file -n number_of_pieces -u -w`
+`python mosaigraph.py base_image_path -p preprocessing_file_path -o output_file -n number_of_pieces -u -w`
 
-You specify an output file using `-o output_file`. Mosaigraph will save the mosaic to that file, using a format based on the file's extension. End `output_file` with ".jpg" to save as a JPEG, ".png" for PNG, etc.
+You specify an output file by adding `-o output_file`. Mosaigraph will save the mosaic to that file, using a format based on the file's extension. End `output_file` with ".jpg" to save as a JPEG, ".png" for PNG, etc. To ensure that your work gets saved, you should specify an output file.
 
-Once a mosaic is complete, Mosaigraph attempts to open it in your system's default image viewer. So even if you don't specify an output file, you should still be able to see the result. But to ensure that your work gets saved, you should specify an output file.
+You can specify the number of pieces your mosaic should have with `-n number_of_pieces`. The resulting mosaic won't have exactly this many pieces, but Mosaigraph will try to get close. If the `-n` argument isn't used, Mosaigraph defaults to 500 pieces.
 
-You can specify the number of pieces your mosaic should have using `-n number_of_pieces`. The resulting mosaic won't have exactly this many pieces, but Mosaigraph will try to get close. If the `-n` argument isn't used, Mosaigraph defaults to 500 pieces.
-
-Finally, there are a couple of important options you can set when running Mosaigraph. 
-
-One is `-u`, which guarantees that each piece of the mosaic is "unique." Without the `-u` option, any candidate image can be reused any number of times within the mosaic. When the `-u` option is present, candidate images will not be reused. Each will appear no more than once.
+One important option is `-u`, which guarantees that each piece of the mosaic is "unique." Without the `-u` option, any of the preprocessed images may be reused any number of times within the mosaic. When the `-u` option is present, images will not be reused. Each will appear no more than once.
 
 The other important option is `-w`. This causes Mosaigraph to switch to a "slow" method of constructing mosaics. It can take a lot longer to construct a mosaic when you use `-w`, but the results will often look better.
 
 Examples
 =====================
-Say we want to make a mosaic that looks like [this image](http://saturn597.github.io/mosaics/monaface.jpg) that we cropped from the Mona Lisa and stored as "monaface.jpg".
+Say we want to make a mosaic that looks like [this image](http://saturn597.github.io/mosaics/monaface.jpg) that we cropped from the Mona Lisa and stored as "monaface.jpg" in our current directory.
 
-Say we also have about 18,500 portrait paintings that we obtained from [Wikiart](http://www.wikiart.org/). They're stored in a directory called "wikiartportraits." These portraits can serve as "pieces" of our mosaic.
+Say we also have about 18,500 portrait paintings that we obtained from [Wikiart](http://www.wikiart.org/). They're stored in the directory "~/mosaics/portraits" These portraits can serve as "pieces" of our mosaic.
 
-Both "wikiartportraits" and "monaface.jpg" are in the current directory, the same directory that contains mosaigraph.py.
+So let's start by preprocessing those files and saving the results so we can use them to make a few mosaics. Let's save the results to a file called "portraitpreprocessing" in our current directory. To do this, you'd run this command:
+
+`python mosaigraph.py -P portraitpreprocessing -i ~/mosaics/portraits`
+
+If you really have 18,500 images, you'll have to let this run over night and then some.
+
+But once it's done we can make some mosaics!
 
 **Example 1**
 
-We can try starting with this command:
+We can try this command:
 
-`python mosaigraph.py monaface.jpg -i wikiartportraits -o mona1.jpg`
+`python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona1.jpg`
 
 This creates a file called `mona1.jpg` that might look like this:
 
@@ -94,25 +154,23 @@ This creates a file called `mona1.jpg` that might look like this:
 
 Okay! That's a start!
 
+Once the preprocessing was done, creating this mosaic didn't take long. The above command took only about 1 minute on a 15-inch, mid-2010 MacBook Pro.
+
 But we didn't capture much detail from the original image. It's hard to tell it's supposed to be the Mona Lisa, unless you zoom out and squint.
-
-Creating this mosaic didn't take long. It took only about 1 minute on a 15-inch, mid-2010 MacBook Pro, if you disregard the initial processing of candidate images.
-
-Processing the 18,500 candidate images in `wikiartportraits` could take hours. However, using methods discussed below, it is only necessary to process a given set of candidate images once. 
 
 **Example 2**
 
 But let's try making a mosaic with about 2000 pieces instead of the default 500:
 
-`python mosaigraph.py monaface.jpg -i wikiartportraits -o mona2.jpg -n 2000`
+`python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona2.jpg -n 2000`
 
 We get this:
 
 [mona2.jpg](http://saturn597.github.io/mosaics/mona2.jpg)
 
-That looks more like it!
+That's an improvement!
 
-The 2000 piece mosaic took roughly twice as long to make as the 500 piece one (again, disregarding candidate preprocessing). But it looks much better.
+The 2000 piece mosaic took roughly twice as long to make as the 500 piece one (again, not counting the initial creation of the preprocessing file). But it looks much better.
 
 **Example 3**
 
@@ -120,136 +178,74 @@ In the mosaics produced thus far, some candidate images were reused many times. 
 
 Adding the `-u` option prevents Mosaigraph from using any candidate image more than once:
 
-`python mosaigraph.py monaface.jpg -i wikiartportraits -o mona3.jpg -n 2000 -u`
+`python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona3.jpg -n 2000 -u`
 
 And this is the result:
 
 [mona3.jpg](http://saturn597.github.io/mosaics/mona3.jpg)
 
-Producing a mosaic using `-u` may take longer, since Mosaigraph will have to load a larger number of distinct images. The above image, `mona3.jpg`, took about 7 minutes to create on the test machine (starting from preprocessed candidate images). 
+Producing a mosaic using `-u` may take longer, since Mosaigraph will have to load a larger number of distinct images. The above image, `mona3.jpg`, took about 7 minutes to create on the test machine (again, starting from the preprocessed candidate images in `portraitpreprocessing`). 
 
-Also, for the `-u` option to work well, you'll need a pool of candidate images that is much larger than the target number of pieces. Otherwise, Mosaigraph will run out of good candidates and the mosaic will not look good.
+For the `-u` option to work well, you'll need a pool of candidate images that is much larger than the target number of pieces. Otherwise, Mosaigraph will run out of good candidates and the mosaic will have large areas with little resemblance to the base image.
 
 **Example 4**
 
 We can also construct a mosaic using the "slow" method by adding the `-w` option. We run this command:
 
-`python mosaigraph.py monaface.jpg -i wikiartportraits -o mona4.jpg -n 2000 -w`
+`python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona4.jpg -n 2000 -w`
 
 Resulting in this image:
 
 [mona4.jpg](http://saturn597.github.io/mosaics/mona4.jpg)
 
-This takes quite a long time. It took 5 hours and 40 minutes on the test machine, not counting candidate preprocessing! But the mosaic looks more like the Mona Lisa than any of the other examples so far.
+This takes quite a long time. It took 5 hours and 40 minutes on the test machine, still not counting candidate preprocessing! But the mosaic looks more like the Mona Lisa than any of the other examples so far.
 
+**Example 5**
 
-More Examples
-=====================
-Here are some more example mosaics along with commands that could have made them.
+For completeness, let's also try using the `-u` option along with the `-w` option. So the mosaic will be constructed using the "slow" method and each "piece" of it will be unique, without reuse of images. 
 
-=====================
-[Image](https://www.dropbox.com/s/j2c5aveia113esx/mona3.jpg?dl=0)
+The command looks like this:
 
-`python mosaigraph.py monaface.jpg -i wikiartportraits -n 5000 -u -o mona3.jpg`
+`python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona5.jpg -n 2000 -w -u`
 
-Mosaic of Mona Lisa's face, composed of about 5000 images. Those 5000 were selected from a directory called "wikiartportraits," which contained about 18000 images. Each image was used no more than once, due to the "-u" option. The default "fast" image selection method was used, since the "-w" option is not present. The mosaic was saved to a file called "mona3.jpg".
+And the result looks like this:
 
-The pool of candidate images was from [Wikiart](http://www.wikiart.org/).
+[mona5.jpg](http://saturn597.github.io/mosaics/mona5.jpg)
 
-=====================
-[Image](https://www.dropbox.com/s/qn8392c8rlo6x3s/mona1.jpg?dl=0)
+The command took about 5 hours, 12 minutes to run.
 
-`python mosaigraph.py monaface.jpg -i wikiartportraits -n 5000 -w -u -o mona1.jpg`
+**Example 6**
 
-Same as the last example, but with the "-w" option - so this mosaic was made using the "slow" method of image comparison. This mosaic looks much better the one produced by the "fast" method.
+The Mona Lisa mosaic in the "About" section above was created similarly, but with 5000 individual pieces instead of 2000.
 
-This is the same mosaic that was listed in the "About" section above.
+`python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona6.jpg -n 5000 -w -u`
 
-=====================
-[Image](https://www.dropbox.com/s/vz750bx7netbbe6/armstrong1.jpg?dl=0)
+[mona6.jpg](http://saturn597.github.io/mosaics/mona6.jpg)
 
-`python mosaigraph.py armstrongface.jpg -i hubbleimages -n 3000 -o armstrong1.jpg`
+**Example 7**
 
-Photo of Neil Armstrong, composed of images taken by the Hubble Space Telescope. The images were drawn from a directory called "hubbleimages" (which contained about 1500 files). Duplicate images were allowed (so no "-u" option) - thus we were able to make a mosaic containing 3000 pieces when we only had 1500 files. The "fast" method of image comparison was used (since the "-w" option was omitted).
+The Neil Armstrong image in the "About" section was creating using a command like this:
 
-Pool of candidate images from [Hubblesite](http://hubblesite.org/).
+`python mosaigraph.py armstrongface.jpg -p hubbleimages -n 3000 -o armstrong1.jpg`
 
-=====================
-[Image](https://www.dropbox.com/s/aguqpixctsay2hw/armstrong2.jpg?dl=0)
+[armstrong1.jpg](http://saturn597.github.io/mosaics/armstrong1.jpg)
 
-`python mosaigraph.py armstrongface.jpg -i hubbleimages -n 3000 -o armstrong2.jpg -w`
+`hubbleimages` was a preprocessing file containing only about 1500 files. we couldn't use the `-u` flag because there weren't enough files.
+ 
+Using the "slow" approach on Neil Armstrong would look like this:
 
-Same as above, but using the "slow" image selection method ("-w" option). The face looks less noisy, though in this case the color looks off compared with the "fast" mosaic.
-
-=====================
-
-How candidates are selected
-=====================
-The default "fast" method looks only at an "average" pixel in each candidate image, and compares it to an "average" pixel in the relevant area of the base image. So if the base image is reddish in a particular area, Mosaigraph will replace it with a candidate image that is reddish overall. This can work, but it means that base image details smaller than the individual pieces of the mosaic are averaged out and lost. 
-
-The "slow" method, used whenever "-w" is specified, compares a number of pixels in each candidate to the *corresponding* pixels in the base image. The idea is that, if a section of the base image is red up above, but blue down below, Mosaigraph will attempt to find a candidate image that is also red up above and blue down below. This allows more detail to come through in the mosaic compared with the fast, averaging method. However, since it ignores overall "average" colors in favor of a detailed, pixelwise comparison, this method is more likely to produce mosaics that seem to have the wrong overall tint to them.
-
-Preprocessing
-=====================
-To construct a mosaic, Mosaigraph starts by opening and inspecting every single candidate image. This "preprocessing" stage can be very time consuming. 
-
-Fortunately, Mosaigraph offers the option of saving the preprocessed data to a file. The next time you want to reuse the same set of candidate images, Mosaigraph can simply reference the file rather than going through the entire preprocessing stage again.
-
-**Creating a preprocessing file**
-
-You create a preprocessing file by using the `-P` argument (upper case). The `-P` is then immediately followed by a path indicating the file you want to save to. You specify the list of files you want to preprocess using the same `-i` option you used to construct mosaics earlier. 
-
-So the command will look like this:
-
-`python mosaigraph.py -P preprocessing_file_path -i candidate_image_list`
-
-All the images referenced by `candidate_image_list` will be preprocessed and the results saved to `preprocessing_file_path`.
-
-**Using a preprocessing file**
-
-To actually use the preprocessed data, just add the `-p` argument (lower case) when constructing a mosaic. Right after the `-p`, insert the path to the preprocessing file you created earlier. 
-
-So to build a mosaic from an existing preprocessing file, you'll use a command that looks like this:
-
-`python mosaigraph.py base_image -p preprocessing_file_path`
-
-This command will construct a new mosaic using all of the images you preprocessed earlier and saved to `preprocessing_file_path`. Instead of taking the potentially time consuming step of preprocessing those images again, Mosaigraph will use the data it already saved. 
-
-This way, if you make multiple mosaics using the same set of candidate images, you only have to do the preprocessing stage once.
-
-**Important note**
-
-The preprocessing file identifies images by their absolute paths. This means that if you rename images or move them to a different directory after producing the preprocessing file, Mosaigraph will be unable to find them again.
+[armstrong2.jpg](http://saturn597.github.io/mosaics/armstrong2.jpg)
 
 Additional notes on preprocessing
 =====================
-When constructing a mosaic using a preprocessing file, you don't need to name the candidate images again. All images saved to the preprocessing file will automatically be used as candidate images. You can change this using the `-c` option. If you add a `-c`, Mosaigraph will only use candidate images that you explicitly specify using an `-i` argument. 
 
 When using `-P` to save preprocessing data to a file, you can create a mosaic with the same command. Just specify a `base image` like any other time you are constructing a mosaic. So the command will be: 
 
-`python mosaigraph.py base_image -P preprocessing_file_path -i candidate_image_list`
+`python mosaigraph.py base_image -P preprocessing_file_path -i image_list`
 
 If you repeatedly run mosaigraph.py with `-P`, using the same `preprocessing_file_path` but different candidate images, the preprocessing data for any new candidate images will be added to the file. Candidate images that you already preprocessed won't be processed again.
 
 Your mosaics will look the same whether or not you use a preprocessing file. And constructing mosaics can still be time consuming. The point of using the preprocessing file is simply to avoid repeating the preprocessing step as much as possible.
-
-Preprocessing file example
-=====================
-Here's an example:
-
-[Image](https://www.dropbox.com/s/axndethqpxdr70w/cedar.jpg?dl=0) | [Image](https://www.dropbox.com/s/131kgtm4iqnfz1k/guido.jpg?dl=0) | [Image](https://www.dropbox.com/s/kh1lka55chdr9qg/maui.jpg?dl=0)
-
-`python mosaigraph.py cedarface.jpg -w -n 2000 -o cedar.jpg -i catpictures -P catpreprocessing`
-
-`python mosaigraph.py guidoface.jpg -w -n 2000 -o guido.jpg -p catpreprocessing`
-
-`python mosaigraph.py mauiface.jpg -w -n 2000 -o maui.jpg -p catpreprocessing`
-
-In the first command, we not only create a mosaic out of a cat's face and save it as "cedar.jpg", but we also create a file called "catpreprocessing" that will save the information Mosaigraph learned about the candidate images we used.
-
-In the subsequent commands, we refer to the "catpreprocessing" file (using "-p") instead of referencing the "catpictures" directory again. This lets Mosaigraph avoid duplicating effort that it already made in the first command (namely, opening and inspecting every image in catpictures). Thus, the second and third mosaics can be made more quickly.
-
-The pool of images in these mosaics came from [Pixabay](https://pixabay.com/).
 
 Ways to improve your mosaics
 =====================
@@ -262,11 +258,11 @@ If you would like your mosaics to look better, there are a few options:
 
 Option and argument reference
 =====================
-Mosaigraph has a number of additional arguments and options. See below for a more complete reference.
+Mosaigraph has a few other arguments and options. See below for a more complete reference.
 
 **-c: Only use candidates explicitly specified in the "-i" argument.**
 
-By default, if a preprocessing file is specified using "-p", all images saved in the file are used as candidate images. The "-c" option tells Mosaigraph not to do this. Only images explicitly specified in the "-i" argument will be used as candidates. 
+By default, if a preprocessing file is specified using "-p", all images saved in the file are used as candidate images. The "-c" option tells Mosaigraph not to do this. Only images explicitly specified in another "-i" argument will be used as candidates. 
 
 This lets you specify a preprocessing file (and thus avoid repeatedly preprocessing images stored in it) without having to use *all* of the images it contains.
 
@@ -280,7 +276,7 @@ You can modify the size Mosaigraph scales images to using the -e argument. Setti
 
 **-i [image list]: Specify images to use in constructing the mosaic.**
 
-This is a space separated list of images and/or directories in which to find images. The referenced images will be used as the "pieces" of the mosaic being built.
+This is a space separated list of images and/or directories in which to find images. The referenced images will be used as the "pieces" of the mosaic being built, or will be saved to a preprocessing file if the `-P` flag is present.
 
 **-l [log file path]: Produce log of which images are used where.**
 
