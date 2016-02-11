@@ -72,39 +72,40 @@ def get_n_pixels(img, n):
 
 def get_best_edge_length(width, height, num_pieces):
     # If we have a rectangle of width and height, and we want to divide it into
-    # num_pieces squares of equal size, return how long each square's sides be
-    # should to get as close as possible to num_pieces
+    # num_pieces squares of equal size, figure out how long each square's sides
+    # should be to get as close as possible to num_pieces.
 
-    # get an initial estimate - maybe would be simpler to just start with an
-    # estimate of 1, then iterate up
-    currentEstimate = int(math.sqrt(width * height / num_pieces))
+    # Note there may be multiple possible answers that get equally close. This
+    # function only returns one of them.
 
-    # get the difference between the number of pieces this gives and the number
-    # we want
-    signedDiff = (width // currentEstimate) * (height // currentEstimate) - num_pieces
-    lastDiff = abs(signedDiff)
+    # We assume that the side length and the number of squares both vertically
+    # and horizontally must be integers - so an algebraic approach that would
+    # give an exact, real number answer can't be used directly. Finding the
+    # "exact" number and then rounding wouldn't guarantee the closest possible
+    # result.
 
-    # if our estimate gets us the exact right number of pieces, we're done
-    if lastDiff == 0:
-        return currentEstimate
+    # So, resorting to trial-and-error.
 
-    # too many pieces means we may want to increase the edge size, so a
-    # positive "step" too few means a negative step
-    # maybe set this in a way that makes the idea clearer
-    step = signedDiff // lastDiff
+    # Start by assuming a side length of 2 (1 could cause div by 0)
+    estimate = 2
 
-    # now step through options to see if there's a better edge size. if the
-    # difference between what we get and what we want increases, we've gone too
-    # far
-    while True:
-        currentEstimate += step
-        currentDiff = abs(
-            (width // currentEstimate) *
-            (height // currentEstimate) -
-            num_pieces)
-        if currentDiff > lastDiff:
-            return currentEstimate - step
-        lastDiff = currentDiff
+    # Keep increasing the estimate and calculating the number of pieces that
+    # would result if we picked that side length. Once we "overshoot" and that
+    # number exceeds our target (num_pieces), we know we're close to the right
+    # number.
+    while (width // estimate) * (height // estimate) > num_pieces:
+        estimate += 1
+
+    # Either our estimate itself is now the best value, or (estimate - 1) is.
+    # Check which one results in a number of pieces that's closest to
+    # num_pieces
+    poss1 = (width // estimate) * (height // estimate) - num_pieces
+    poss2 = (width // (estimate - 1)) * (height // (estimate - 1)) - num_pieces
+
+    if abs(poss1) > abs(poss2):
+        return estimate - 1
+
+    return estimate
 
 
 def make_proportional(img, ratio=1):
@@ -269,8 +270,9 @@ class PixelwiseSampler(Sampler):
 
         diff = 0
 
+        # Consider squaring instead of abs-ing here.
         for pixelA, pixelB in zip(pixelsA, pixelsB):
-            diff += (pixelA[0] - pixelB[0])**2 + (pixelA[1] - pixelB[1])**2 + (pixelA[2] - pixelB[2])**2
+            diff += abs(pixelA[0] - pixelB[0]) + abs(pixelA[1] - pixelB[1]) + abs(pixelA[2] - pixelB[2])
 
         return diff / (self.sample_size * 3)
 
