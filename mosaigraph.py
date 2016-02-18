@@ -40,7 +40,7 @@ class TooFewCandidatesException(Exception):
 ######## Utility functions ########
 
 def get_color_avg(pixels):
-    # Get the average color in a iterable of rgb pixels.
+    # Get the average color in an iterable of rgb pixels.
 
     r, g, b = 0, 0, 0
     num_pixels = 0
@@ -61,19 +61,19 @@ def get_color_avg(pixels):
 def get_best_edge_length(width, height, num_pieces):
     # If we have a rectangle of width and height, and we want to divide it into
     # num_pieces squares of equal size, this function says how long each
-    # square's sides should be.
-
-    # Note there may be multiple possible answers that get equally close. This
-    # function only returns one of them.
+    # square's sides should be to accomplish that.
 
     # We assume that the side length and the number of squares both vertically
     # and horizontally must be integers, so our answer won't yield EXACTLY
     # num_pieces.
 
-    # Further, finding the exact number algebraically and then rounding
+    # Note there may be multiple possible answers that get equally close. This
+    # function only returns one of them.
+
+    # Also note, finding the exact number algebraically and then rounding
     # wouldn't guarantee the best possible result. So, we use trial-and-error.
 
-    # Assume a side length of 2 (we check estimate - 1 later anyway).
+    # First, assume a side length of 2 (we check estimate - 1 later anyway).
     estimate = 2
 
     # Calculate the number of pieces the estimate yields and compare to
@@ -81,9 +81,8 @@ def get_best_edge_length(width, height, num_pieces):
     while (width // estimate) * (height // estimate) > num_pieces:
         estimate += 1
 
-    # Either our estimate itself is now the best value or (estimate - 1) is.
-    # Find out which one results in a number of pieces that's closest to
-    # num_pieces.
+    # Either our estimate is now the best value or (estimate - 1) is.  Find out
+    # which one results in a number of pieces that's closest to num_pieces.
     poss1 = (width // estimate) * (height // estimate) - num_pieces
     poss2 = (width // (estimate - 1)) * (height // (estimate - 1)) - num_pieces
 
@@ -94,8 +93,8 @@ def get_best_edge_length(width, height, num_pieces):
 
 
 def make_proportional(img, ratio=1):
-    # Return a version of "img" with just enough of its edges cut off to make
-    # the width / height ratio whatever is specified.
+    # Return a modified version of "img" with just enough of its edges cut off
+    # to make the width / height ratio whatever is specified.
 
     width, height = img.size
     if width > height * ratio:
@@ -113,7 +112,7 @@ def make_proportional(img, ratio=1):
 
 def expand_directories(paths):
     # Take a list of paths. Return that list of paths, but with any directories
-    # replaced by the files they contain (but not recursively expanding
+    # replaced by the files they contain (but don't recursively expand
     # subdirectories).
 
     new_paths = []
@@ -137,23 +136,24 @@ def preprocess_paths(paths, preprocessed_data, sampler):
     # that data in the preprocessed_data argument. This way we won't have to
     # process the data again.
 
-    # The sampler argument is a "Sampler" object we should use to sample the
-    # pixels. The sampler determines which pixels to sample in each image.
+    # The sampler argument is an object of class Sampler we should use to
+    # sample the pixels. The sampler determines which pixels to sample in each
+    # image.
 
     # Returns a dictionary whose keys are the paths and whose values contain 1)
     # the colors of each pixel sampled and 2) the "average" color of those
     # pixels.
 
+    paths = expand_directories(paths)
+
     result = {}
-
-    paths = expand_directories(paths or [])
-
     failed_paths = []
+    num_preprocessed = 0
 
     for n, path in enumerate(paths):
         full_path = os.path.abspath(path)
 
-        sys.stdout.write('\rPreprocessing candidate {} out of {}'.format(
+        sys.stdout.write('\rInspecting candidate {} out of {}'.format(
             n + 1, len(paths)))
         sys.stdout.flush()
 
@@ -164,24 +164,30 @@ def preprocess_paths(paths, preprocessed_data, sampler):
             if not result[full_path]:
                 del result[full_path]
                 failed_paths.append(full_path)
+            else:
+                num_preprocessed += 1
 
-    print('')
-    for path in failed_paths:
-        print('Note: unable to use file {}'.format(path))
+    if paths:  # This is to format the output correctly.
+        print('')
 
-    print('Preprocessing complete!')
+    print('{} images had to be preprocessed.'.format(num_preprocessed))
+
+    if failed_paths:
+        msg = ', '.join(failed_paths)
+        print('\nCouldn\'t use these files: {}\n'.format(msg))
 
     return result
 
 
 def process_image(path, sampler):
-    # Take a path and, if the path leads to an image, open and inspect it.
+    # Take a path and open and inspect it.
 
-    # Take a sample of pixels within the image, and get the color values at
-    # each pixel.  Return a dictionary containing those color values and an
-    # "average" color (with separate "r", "g" and "b" components).
+    # If the path leads to an image, take a sample of pixels within the image,
+    # and get the color values at each pixel.  Return a dictionary containing
+    # those color values and an "average" color (with separate "r", "g" and "b"
+    # components).
 
-    # The sampler determines which pixels we sample.
+    # The sampler we're passed determines which pixels we sample.
 
     # If the path doesn't go to an image, return None.
 
@@ -205,18 +211,21 @@ def process_image(path, sampler):
 # Samplers are objects that know how to take samples of sets of pixels and
 # return information about their color. They wrap basic information about the
 # sample size and about which pixels to sample.
-#
-# Reusing the same sampler between multiple images gives us consistency,
-# allowing us to make meaningful comparisons between the images.
 
+# Reusing the same sampler between multiple images gives us consistency,
+# allowing us to make meaningful comparisons between the images. We can include
+# a "compare" method to make use of this.
+
+# Two sampler subclasses are included below, each of which has a different
+# "compare" method.
 
 def get_sampler(pixelwise, sample_size, width=1000, height=1000):
     # Return an appropriate sampler, depending on the intended sample size and
     # on whether it should be a "pixelwise" sampler
 
     # When images are sampled, they are all scaled to the same size for
-    # consistency. The size is somewhat arbitrary, but can be specified through
-    # the "width" and "height" parameters.
+    # consistency. The size used doesn't make a huge difference, but can be
+    # specified through the "width" and "height" parameters if desired.
     if pixelwise:
         return PixelwiseSampler(sample_size, width, height)
     else:
@@ -233,8 +242,8 @@ class Sampler(object):
             for i in range(sample_size)]
 
     def sample_image(self, image):
-        # The basic method of a sampler that returns a list of the colors found
-        # in the sampled pixels.
+        # Sample an image and return a list of the colors found in the sampled
+        # pixels.
 
         # Scale and clip images first so that they're all comparable.
         image = make_proportional(image, self.width / self.height).resize(
@@ -243,8 +252,8 @@ class Sampler(object):
 
 
 class AverageSampler(Sampler):
-    # A sampler that knows how to compare two images by finding the "average"
-    # color of each then finding the distance between the two colors.
+    # A sampler that also knows how to compare two images by finding the
+    # "average" color of each then finding the distance between the two colors.
 
     # This is used for the "fast" method of mosaic construction.
 
@@ -274,8 +283,6 @@ class PixelwiseSampler(Sampler):
     # This is used for the "slow" method of mosaic construction.
 
     def compare(self, imageA, imageB):
-        # TODO: this is kind of redundant with get_distances - fix
-
         pixelsA = self.sample_image(imageA)
         pixelsB = self.sample_image(imageB)
 
@@ -294,12 +301,9 @@ class PixelwiseSampler(Sampler):
 ######## Matchers ########
 
 # Matchers are objects that have access to a pool of "candidate" images and a
-# sampler. If you pass an image to their "get_match" method, they will use
-# their sampler to compare that image to each of their candidates. They then
-# return the candidate they decide is most visually similar to it.
-
-# For each type of matcher, the key method is "get_match", which takes an image
-# and returns a candidate it thinks is most visually similar.
+# sampler. If you pass an image to their "get_match" method, they will try to
+# find the candidate that most resembles it. The precise meaning of "resembles"
+# depends in part on the sampler.
 
 def get_matcher(pixelwise, unique, candidates, sampler):
     # Return an appropriate matcher, depending on the parameters.
@@ -317,9 +321,6 @@ def get_matcher(pixelwise, unique, candidates, sampler):
 
 
 class Matcher(object):
-    def __init__(self):
-        self.unique = False
-
     def get_distances(self, image, candidate):
         # The base get_match method uses this method to find the distances
         # between the candidate images and the base image. Matchers implement
@@ -393,9 +394,9 @@ class KDTreeAverageMatcher(Matcher):
     # into a k-d tree, and use that to easily find the candidate that's closest
     # to a given color.
 
-    # This uses scipy's implementation of k-d trees, so if scipy isn't present,
-    # we may have to resort to AverageMatcher, which should yield similar
-    # results, just a bit more slowly.
+    # This uses scipy's implementation of k-d trees. If scipy isn't present,
+    # we just have to use AverageMatcher instead, which should yield similar
+    # results, just more slowly.
 
     # Also, using scipy's implementation of k-d trees makes it difficult to
     # exclude items from the search that we've already used. So for now this
@@ -408,6 +409,7 @@ class KDTreeAverageMatcher(Matcher):
         self.sampler = sampler
         self.kdtree = spatial.KDTree(
             [(c['r'], c['g'], c['b']) for c in candidates])
+        self.unique = False
 
     def get_match(self, image):
         rgb = get_color_avg(self.sampler.sample_image(image))
@@ -418,8 +420,7 @@ class KDTreeAverageMatcher(Matcher):
 ######## Core functions ########
 
 def make_mosaic(img, n, matcher, scaled_piece_size, random_order, unique):
-    # Makes a photomosaic, returning a PIL.Image representing it, which can
-    # then be displayed, saved, etc.
+    # Makes a photomosaic, returning a PIL.Image representing it.
 
     # Also returns a "log" in the form of a dict describing which images were
     # used where.
@@ -454,8 +455,8 @@ def make_mosaic(img, n, matcher, scaled_piece_size, random_order, unique):
     if unique and actual_num_pieces > len(matcher.candidates):
         raise TooFewCandidatesException
 
-    # To process all the "pieces" of the mosaic, we'll iterate through the
-    # piece_ids list.
+    # To process all the "pieces" of the mosaic, we'll iterate through these
+    # piece_ids.
     piece_ids = [(x, y) for x in range(0, numX) for y in range(0, numY)]
 
     if random_order:
@@ -468,7 +469,7 @@ def make_mosaic(img, n, matcher, scaled_piece_size, random_order, unique):
     print('Beginning to select pieces...')
 
     for current_num, (x, y) in enumerate(piece_ids):
-        # old_piece is the piece of the base image we're currently examining
+        # Crop out the piece of the base image we're currently examining
         old_piece = img.crop((
             x * division_length,
             y * division_length,
@@ -500,16 +501,16 @@ def make_mosaic(img, n, matcher, scaled_piece_size, random_order, unique):
 
 
 def main(args):
-    # Depending on the command-line args, construct a mosaic and/or save
-    # preprocessing results
+    # Depending on the command-line args, 1) load information from any
+    # preprocessing file we were given, 2) preprocess any additional images we
+    # were told to preprocess, 3) save any preprocessing data we were told to
+    # save, then, 4) if we were given a base image, construct a mosaic.
 
     if args.loadpreprocessing and args.savepreprocessing:
         raise ArgumentException('Can use either -p or -P, but not both')
 
     if not (args.baseimage or args.savepreprocessing):
         raise ArgumentException('Nothing to do!')
-
-    sample_size = args.samplesize
 
     loaded_preprocessing_data = {}
     loaded_sampling_info = None  # info on how preprocessed images were sampled
@@ -527,12 +528,12 @@ def main(args):
             print('Note: couldn\'t open specified preprocessing file.')
             if args.savepreprocessing:
                 print('Will attempt to create it later on.')
-                loaded_preprocessing_data = {
-                    'sampling_info': {}, 'image_data': {}}
+
+    sample_size = args.samplesize
 
     # For pixelwise comparisons to make sense, we need to sample the same
     # pixels in each image. Thus, we need to use the same sample size as what's
-    # in the preprocessing file for the file to be useful
+    # in the preprocessing file, if there was a preprocessing file.
     if loaded_sampling_info and args.pixelwise:
         if loaded_sampling_info['sample_size'] != sample_size:
             print('''Warning! Not using specified sample size.
@@ -547,37 +548,37 @@ def main(args):
     if loaded_sampling_info:
         sampler.pts_to_sample = loaded_sampling_info['pts_sampled']
 
-    all_image_data = loaded_preprocessing_data.get('image_data', {})
-    old_len = len(all_image_data)
+    # Two ways to get candidate images. One is from the preprocessing file.
+    candidate_dict = loaded_preprocessing_data.get('image_data', {})
+    old_len = len(candidate_dict)
 
-    preprocessed_paths = preprocess_paths(
-        args.imagelist, all_image_data,
-        sampler)
-    all_image_data.update(preprocessed_paths)
+    # The other is through the "-i" argument (args.imagelist). Preprocess any
+    # additional images and add them to candidate_dict.
+    imagelist_data = preprocess_paths(args.imagelist, candidate_dict, sampler)
+    candidate_dict.update(imagelist_data)
 
-    # If the len of all_image_data increased, then we've preprocessed paths
-    # that weren't in our preprocessing file, so we may want to save the new
-    # data.
-    if args.savepreprocessing and len(all_image_data) > old_len:
+    # If the len of candidate_dict increased, then we've preprocessed images
+    # that weren't in our preprocessing file. Save any new data if the user
+    # wants to (i.e., if they've set the "-P" flag).
+    if args.savepreprocessing and len(candidate_dict) > old_len:
         data_to_save = {
-            'image_data': all_image_data,
+            'image_data': candidate_dict,
             'sampling_info': loaded_sampling_info or {
                 'pts_sampled': sampler.pts_to_sample,
                 'sample_size': sample_size}
             }
         print('Writing preprocessed data to {}...'.format(preprocessing_path))
         with open(preprocessing_path, 'w') as f:
-            # might be better to do more often than just once at the end so
-            # that interruptions don't ruin everything during a long
-            # preprocessing period
+            # TODO: might be better to save more often than just once at the
+            # end, so that interruptions don't ruin everything.
             json.dump(data_to_save, f)
 
-    candidate_dict = all_image_data
     if args.explicitonly:
-        candidate_dict = preprocessed_paths
+        candidate_dict = imagelist_data
 
     for path in candidate_dict:
-        # make sure each candidate knows its own path
+        # About to convert candidate_dict to a list - make sure we'll still
+        # know the paths.
         candidate_dict[path]['path'] = path
 
     candidate_list = candidate_dict.values()
@@ -650,7 +651,7 @@ def get_arg_parser():
         pixelated and hard to make out, even when zoomed''')
 
     arg_parser.add_argument(
-        '-i', '--imagelist', metavar='IMAGES',
+        '-i', '--imagelist', metavar='IMAGES', default=[],
         nargs='+',
         help='draw from this list of images in constructing the mosaic')
 
