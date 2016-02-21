@@ -126,86 +126,6 @@ def expand_directories(paths):
     return new_paths
 
 
-def preprocess_paths(paths, preprocessed_data, sampler):
-    # Take a list of paths to images.
-
-    # Within each image, take a random sample of pixels and find the color of
-    # each of those pixels.
-
-    # If our caller already has this information for any images, it can include
-    # that data in the preprocessed_data argument. This way we won't have to
-    # process the data again.
-
-    # The sampler argument is an object of class Sampler we should use to
-    # sample the pixels. The sampler determines which pixels to sample in each
-    # image.
-
-    # Returns a dictionary whose keys are the paths and whose values contain 1)
-    # the colors of each pixel sampled and 2) the "average" color of those
-    # pixels.
-
-    paths = expand_directories(paths)
-
-    result = {}
-    failed_paths = []
-    num_preprocessed = 0
-
-    for n, path in enumerate(paths):
-        full_path = os.path.abspath(path)
-
-        sys.stdout.write('\rInspecting candidate {} out of {}'.format(
-            n + 1, len(paths)))
-        sys.stdout.flush()
-
-        result[full_path] = preprocessed_data.get(full_path, {})
-
-        if result[full_path].get('pixels') is None:
-            result[full_path] = process_image(full_path, sampler)
-            if not result[full_path]:
-                del result[full_path]
-                failed_paths.append(full_path)
-            else:
-                num_preprocessed += 1
-
-    if paths:  # This is to format the output correctly.
-        print('')
-
-    print('{} images had to be preprocessed.'.format(num_preprocessed))
-
-    if failed_paths:
-        msg = ', '.join(failed_paths)
-        print('\nCouldn\'t use these files: {}\n'.format(msg))
-
-    return result
-
-
-def process_image(path, sampler):
-    # Take a path and open and inspect it.
-
-    # If the path leads to an image, take a sample of pixels within the image,
-    # and get the color values at each pixel.  Return a dictionary containing
-    # those color values and an "average" color (with separate "r", "g" and "b"
-    # components).
-
-    # The sampler we're passed determines which pixels we sample.
-
-    # If the path doesn't go to an image, return None.
-
-    try:
-        image = make_proportional(Image.open(path).convert(mode='RGB'))
-    except (IOError, struct.error):
-        # IOError is usually because the file isn't an image file.
-        # TODO: look into what's causing struct.error
-        return None
-
-    # maybe add an option to suppress 'pixels' from the result for an "average
-    # only" mode
-    d = {'pixels': sampler.sample_image(image)}
-    d.update(get_color_avg(d['pixels']))
-
-    return d
-
-
 ######## Samplers ########
 
 # Samplers are objects that know how to take samples of sets of pixels and
@@ -417,13 +337,95 @@ class KDTreeAverageMatcher(Matcher):
         return self.candidates[index]
 
 
-######## Core functions ########
+######## Core preprocessing and mosaic construction ########
+
+def preprocess_paths(paths, preprocessed_data, sampler):
+    # Take a list of paths to images.
+
+    # Within each image, take a random sample of pixels and find the color of
+    # each of those pixels.
+
+    # If our caller already has this information for any images, it can include
+    # that data in the preprocessed_data argument. This way we won't have to
+    # process the data again.
+
+    # The sampler argument is an object of class Sampler we should use to
+    # sample the pixels. The sampler determines which pixels to sample in each
+    # image.
+
+    # Returns a dictionary whose keys are the paths and whose values contain 1)
+    # the colors of each pixel sampled and 2) the "average" color of those
+    # pixels.
+
+    paths = expand_directories(paths)
+
+    result = {}
+    failed_paths = []
+    num_preprocessed = 0
+
+    for n, path in enumerate(paths):
+        full_path = os.path.abspath(path)
+
+        sys.stdout.write('\rInspecting candidate {} out of {}'.format(
+            n + 1, len(paths)))
+        sys.stdout.flush()
+
+        result[full_path] = preprocessed_data.get(full_path, {})
+
+        if result[full_path].get('pixels') is None:
+            result[full_path] = process_image(full_path, sampler)
+            if not result[full_path]:
+                del result[full_path]
+                failed_paths.append(full_path)
+            else:
+                num_preprocessed += 1
+
+    if paths:  # This is to format the output correctly.
+        print('')
+
+    print('{} images had to be preprocessed.'.format(num_preprocessed))
+
+    if failed_paths:
+        msg = ', '.join(failed_paths)
+        print('\nCouldn\'t use these files: {}\n'.format(msg))
+
+    return result
+
+
+def process_image(path, sampler):
+    # Take a path and open and inspect it.
+
+    # If the path leads to an image, take a sample of pixels within the image,
+    # and get the color values at each pixel.  Return a dictionary containing
+    # those color values and an "average" color (with separate "r", "g" and "b"
+    # components).
+
+    # The sampler we're passed determines which pixels we sample.
+
+    # If the path doesn't go to an image, return None.
+
+    try:
+        image = make_proportional(Image.open(path).convert(mode='RGB'))
+    except (IOError, struct.error):
+        # IOError is usually because the file isn't an image file.
+        # TODO: look into what's causing struct.error
+        return None
+
+    # maybe add an option to suppress 'pixels' from the result for an "average
+    # only" mode
+    d = {'pixels': sampler.sample_image(image)}
+    d.update(get_color_avg(d['pixels']))
+
+    return d
+
 
 def make_mosaic(img, n, matcher, scaled_piece_size, random_order, unique):
     # Makes a photomosaic, returning a PIL.Image representing it.
 
     # Also returns a "log" in the form of a dict describing which images were
     # used where.
+
+    # Arguments are as follows:
 
     # img: the base image
     # n: the number of square pieces we want the mosaic to have.
@@ -500,20 +502,78 @@ def make_mosaic(img, n, matcher, scaled_piece_size, random_order, unique):
     return result_image, log
 
 
-def main(args):
-    # Depending on the command-line args, 1) load information from any
-    # preprocessing file we were given, 2) preprocess any additional images we
-    # were told to preprocess, 3) save any preprocessing data we were told to
-    # save, then, 4) if we were given a base image, construct a mosaic.
+######## Functions to parse and act on command-line args ########
 
-    if args.loadpreprocessing and args.savepreprocessing:
-        raise ArgumentException('Can use either -p or -P, but not both')
+def main(args):
+    # Gather candidate images (using prep_candidates) and then, if we were
+    # passed a base image, use the candidate images to construct a mosaic.
 
     if not (args.baseimage or args.savepreprocessing):
         raise ArgumentException('Nothing to do!')
 
+    candidates, sampler = prep_candidates(args)
+
+    if not args.baseimage:
+        return
+
+    if args.outfile and os.path.exists(args.outfile):
+        while True:
+            response = input(
+                'Overwrite existing file {}? (y/n) '.format(
+                    args.outfile))
+            if response == 'y':
+                break
+            if response == 'n':
+                print('Canceling...')
+                sys.exit(0)
+
+    print('Making mosaic out of {}...'.format(args.baseimage))
+
+    if len(candidates) == 0:
+        raise NoCandidatesException
+
+    print('Using pool of {} candidate images'.format(len(candidates)))
+
+    input_image = Image.open(args.baseimage)
+    matcher = get_matcher(
+        args.pixelwise, args.unique, candidates, sampler)
+    mosaic, log = make_mosaic(
+        input_image, args.n, matcher, args.edgesize, args.randomize,
+        args.unique)
+
+    result_tester = get_sampler(False, 1000)
+    print((
+        'New mosaic produced with average difference {} from the '
+        'original image').format(
+        result_tester.compare(input_image, mosaic)))
+
+    if args.outfile:
+        print('Saving mosaic as {}'.format(args.outfile))
+        mosaic.save(args.outfile)
+
+    if not args.nooutput:
+        print('Showing output')
+        mosaic.show()
+
+    if args.log:
+        print('Saving log as {}'.format(args.log))
+        with open(args.log, 'w') as f:
+            json.dump(log, f)
+
+
+def prep_candidates(args):
+    # Depending on the command-line args, 1) load information on potential
+    # candidate images from any preprocessing file we were given, 2) preprocess
+    # any additional images we were told to preprocess, 3) save any
+    # preprocessing data we were told to.
+
+    # Returns a list of all the candidates we should use to construct any
+    # mosaics.
+
+    if args.loadpreprocessing and args.savepreprocessing:
+        raise ArgumentException('Can use either -p or -P, but not both')
+
     loaded_preprocessing_data = {}
-    loaded_sampling_info = None  # info on how preprocessed images were sampled
 
     preprocessing_path = args.loadpreprocessing or args.savepreprocessing
 
@@ -522,12 +582,13 @@ def main(args):
         try:
             with open(preprocessing_path, 'r') as f:
                 loaded_preprocessing_data = json.load(f)
-            loaded_sampling_info = loaded_preprocessing_data.get(
-                'sampling_info')
         except IOError as e:
             print('Note: couldn\'t open specified preprocessing file.')
             if args.savepreprocessing:
                 print('Will attempt to create it later on.')
+
+    # Get info on how the preprocessed data was sampled
+    loaded_sampling_info = loaded_preprocessing_data.get('sampling_info', {})
 
     sample_size = args.samplesize
 
@@ -581,53 +642,8 @@ def main(args):
         # know the paths.
         candidate_dict[path]['path'] = path
 
-    candidate_list = candidate_dict.values()
-
-    # If we got a "baseimage" arg, then the user wants to make a new mosaic.
-    if args.baseimage:
-        if args.outfile and os.path.exists(args.outfile):
-            while True:
-                response = input(
-                    'Overwrite existing file {}? (y/n) '.format(
-                        args.outfile))
-                if response == 'y':
-                    break
-                if response == 'n':
-                    print('Canceling...')
-                    sys.exit(0)
-
-        print('Making mosaic out of {}...'.format(args.baseimage))
-
-        if len(candidate_list) == 0:
-            raise NoCandidatesException
-
-        print('Using pool of {} candidate images'.format(len(candidate_list)))
-
-        input_image = Image.open(args.baseimage)
-        matcher = get_matcher(
-            args.pixelwise, args.unique, candidate_list, sampler)
-        mosaic, log = make_mosaic(
-            input_image, args.n, matcher, args.edgesize, args.randomize,
-            args.unique)
-
-        result_tester = get_sampler(False, 1000)
-        print(
-            ('New mosaic produced with average difference {} from the '
-                'original image').format(
-                result_tester.compare(input_image, mosaic)))
-
-        if args.outfile:
-            print('Saving mosaic as {}'.format(args.outfile))
-            mosaic.save(args.outfile)
-
-        if not args.nooutput:
-            print('Showing output')
-            mosaic.show()
-
-        if args.log:
-            print('Saving log as {}'.format(args.log))
-            with open(args.log, 'w') as f:
-                json.dump(log, f)
+    # TODO: Might be possible to just keep candidate_dict as a dictionary.
+    return candidate_dict.values(), sampler
 
 
 def get_arg_parser():
@@ -637,7 +653,6 @@ def get_arg_parser():
             image we\'re making a mosaic of''')
 
     # options impacting mosaic construction
-
     arg_parser.add_argument(
         '-c', '--explicitonly', action='store_true',
         help='''confine candidate images to ones explicitly specified in the
@@ -707,6 +722,7 @@ def get_arg_parser():
         where in the mosaic''')
 
     return arg_parser
+
 
 if __name__ == '__main__':
     arg_parser = get_arg_parser()

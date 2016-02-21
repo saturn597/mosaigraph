@@ -2,15 +2,13 @@ About
 =====================
 Mosaigraph is a command line utility for making photomosaics. 
 
-A "photomosaic" consists of a large number of small images that, when viewed together, look like some other, larger image. 
+A "photomosaic" consists of a large number of small images. When viewed together, they look like some other, larger image. 
 
-For example, here's a photomosaic produced using Mosaigraph:
+Here's an example produced by Mosaigraph:
 
-[mona6.jpg](http://saturn597.github.io/mosaics/mona6.jpg)
+[mona5.jpg](http://saturn597.github.io/mosaics/mona5.jpg)
 
-(Heads up - that's a large image, about 12MB).
-
-The file contains about 5000 portraits obtained from [Wikiart](http://www.wikiart.org/). When those portraits are stitched together into a mosaic, they look like Mona Lisa's face.
+The file contains about 2000 portraits obtained from [Wikiart](http://www.wikiart.org/). When those portraits are stitched together into a mosaic, they look like Mona Lisa's face.
 
 Here's another mosaic, a bit smaller:
 
@@ -32,13 +30,13 @@ Running Mosaigraph
 =====================
 Mosaigraph is written in Python. It should be compatible with Python 2 or 3. 
 
-You'll need to install [the Pillow library](https://python-pillow.github.io/) to use Mosaigraph. To do this using Pip: 
+You'll need to install [the Pillow library](https://python-pillow.github.io/) to use it. You can do that using Pip: 
 
 `pip install pillow`
 
 Installing Pillow will require you to be superuser, to use sudo, or to use virtualenv.
 
-Once Pillow is installed, simply download the file "mosaigraph.py" and navigate to the directory that contains it. Here's one way to do that:
+Once Pillow is installed, simply download the file "mosaigraph.py" and navigate to the directory that contains it. For example:
 
 `git clone https://github.com/saturn597/mosaigraph.git`
 
@@ -48,39 +46,41 @@ Now you can run the program as described in the following sections.
 
 Quick start
 =====================
-Say yo've decided on a "base image", i.e., the image you want your mosaic to look like when viewed as a whole. It is stored at `base_image_path`.
+Say you've decided on the image you want your mosaic to "look like." Call it the "base image" and store it at `base_image_path`.
 
-Say you also have a collection of "candidate images," i.e., images Mosaigraph can use as the pieces of the mosaic. Those images are stored in the directory `candidate_image_directory`.
+Say you also have a collection of images Mosaigraph can use as the pieces of the mosaic. Call them your "candidate images." They are stored in the directory `candidate_image_directory`.
 
-So how do you use Mosaigraph to make a mosaic? Just take two easy steps.
+You can produce a mosaic in two easy steps.
 
 **Step 1: Preprocess your candidate images**
 
-First, Mosaigraph needs to learn about your list of candidate images. We'll call this step "preprocessing." The following command tells Mosaigraph to preprocess your candidate images and save the results to a new file named `preprocessing_file`:
+To start, Mosaigraph needs to learn some things about your candidate images. We'll call this learning "preprocessing."
+
+A command like the following tells Mosaigraph to preprocess your candidate images and save what it learns to a new file named `preprocessing_file`:
 
 `python mosaigraph.py -P preprocessing_file -i candidate_image_directory`
 
 Mosaigraph will create `preprocessing_file` and will use it to save important data about your candidate images. 
 
-If you have a lot of candidate images, this can take a while. However, once you've created your `preprocessing_file`, you'll be able to make as many mosaics as you want without doing the preprocessing step again (unless you want to use a different set of candidate images). You just have to reference that file.
+If you have a lot of candidate images, this can take a while. However, once you've created your `preprocessing_file`, you can use it to make as many mosaics as you want. You don't have to do the preprocessing step again (unless you want to use a different set of candidate images). 
 
 **Step 2: Create the mosaic**
 
-Now, using the `preprocessing_file` you created above, create a mosaic with a command like this: 
+Now, using the `preprocessing_file` you created above and the `base_image_path` you decided upon, create a mosaic with a command like this: 
 
 `python mosaigraph.py base_image_path -p preprocessing_file [-o output_file] [-n number_of_pieces] [-u] [-w]`
 
 Flags/arguments in brackets are optional.
 
-Once that command is complete, Mosaigraph will try to display the mosaic using your system's image viewer. 
+Once the mosaic is complete, Mosaigraph will try to open it in an image viewer.
 
-If an output file is specified (using `-o output_file`), Mosaigraph will also save the mosaic to that file. The file format depends on the extension you use. End the filename in ".jpg" for a jpg, etc. To ensure that your work gets saved, you should specify an output file.
+If an output file is specified (using `-o output_file`), Mosaigraph will save the mosaic to that file. The file format depends on the extension you use - end `output_file` with ".jpg" for a jpg, etc. To ensure that your work gets saved, you should specify an output file.
 
-Mosaics consist of about 500 pieces by default. You can specify a different number of pieces using the `-n` flag as above. Mosaigraph will try to get close to the specified number of pieces, though the actual number may differ slightly.
+Mosaics consist of about 500 pieces by default. You can specify a different number of pieces using the `-n` flag. Mosaigraph will try to get close to the specified number of pieces, though the actual number may differ slightly.
 
 Use `-u` to ensure that each piece is "unique," i.e., that a given candidate image won't be used more than once.
 
-Use `-w` to trigger "slow mode." In slow mode, Mosaigraph will take a lot longer to make a mosaic, but the result can look much better.
+Use `-w` to trigger "slow mode." In slow mode, Mosaigraph will take a lot longer to make a mosaic, but the result may look much better.
 
 More on preprocessing
 =====================
@@ -92,7 +92,11 @@ Here again is the command we used in the quick start to create a preprocessing f
 
 `python mosaigraph.py -P preprocessing_file -i candidate_image_directory`
 
-Actually, instead of just a single `candidate_image_directory`, the `-i` argument can take a space-separated list of directories and image files. You can use Unix wildcards here, like `*`, which is convenient when referencing large numbers of images. Mosaigraph will preprocess any image files you list after `-i`. For any directory you list, Mosaigraph will attempt to preprocess all image files in that directory (but will not automatically proceed into subdirectories of that directory). Files that cannot be processed as images will be ignored.
+Actually, instead of just a single `candidate_image_directory`, the `-i` argument can take a space-separated list of directories and image files. You can use Unix wildcards here, like `*`. 
+
+Mosaigraph will preprocess any image files you list after `-i`. For any directory you list, Mosaigraph will attempt to preprocess all image files in that directory (but will not automatically proceed into subdirectories of that directory). 
+
+Files that cannot be processed as images will be ignored.
 
 If you decide you want to use more candidate images for future mosaics, you can add them to an existing preprocessing file. Just run the same command you used to create the file, but specify the new set of images after `-i`. The new images will be preprocessed and Mosaigraph will save what it learns about them to the file. Images you already preprocessed won't be processed again.
 
@@ -110,9 +114,9 @@ Note that Mosaigraph's preprocessing files identify images by their absolute pat
 
 Examples
 =====================
-Say we want to make a mosaic that looks like [this image](http://saturn597.github.io/mosaics/monaface.jpg), part of the Mona Lisa. Say we saved that image as "monaface.jpg."
+Say we want to make mosaics that look like [this image](http://saturn597.github.io/mosaics/monaface.jpg), part of the Mona Lisa. Say we saved that image as "monaface.jpg." That will be our "base image."
 
-Say we also have about 18,500 portrait paintings that we obtained from [Wikiart](http://www.wikiart.org/). They're stored in the directory "~/mosaics/portraits". These portraits will serve as "pieces" of our mosaic.
+Say we also have about 18,500 portrait paintings that we obtained from [Wikiart](http://www.wikiart.org/). They're stored in the directory "~/mosaics/portraits". These portraits will serve as "pieces" of our mosaic. They are our candidate images.
 
 Start by preprocessing the portrait paintings and saving the results to a file called "portraitpreprocessing". To do this, run the following command:
 
@@ -124,7 +128,7 @@ But once it's done we can make some mosaics!
 
 **Example 1**
 
-We could run the following command now:
+We can run the following command now:
 
 `python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona1.jpg`
 
@@ -196,15 +200,12 @@ Creating that image took about 5 hours, 12 minutes.
 
 **Example 6**
 
-The Mona Lisa mosaic in the "About" section above was created like example 5 but with 5000 individual pieces instead of 2000:
-
+You can create an even more detailed Mona Lisa mosaic by increasing the number of pieces to 5000: 
 `python mosaigraph.py monaface.jpg -p portraitpreprocessing -o mona6.jpg -n 5000 -w -u`
 
-Here's that link again:
+Here's the result - note it's a fairly large image:
 
 [mona6.jpg](http://saturn597.github.io/mosaics/mona6.jpg)
-
-Again, it's quite a large image.
 
 **Example 7**
 
@@ -231,8 +232,6 @@ If you would like your mosaics to look better, there are a few options:
 
 Option and argument reference
 =====================
-Mosaigraph has a few other arguments and options that haven't been touched on yet. See below for a more complete reference.
-
 **-c: Only use candidates explicitly specified in the "-i" argument.**
 
 By default, if a preprocessing file is specified using "-p", all images saved in the file are used as candidate images. The "-c" option tells Mosaigraph not to do this. Only images explicitly specified in an "-i" argument will be used as candidates. 
